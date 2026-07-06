@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Scratch Helper</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">🐱</span>
+      <div>
+        <div class="title">Scratch Helper</div>
+        <div class="subtitle">Your friendly Scratch 3.0 tutor</div>
+      </div>
+    </div>
+    <div class="status" id="status">
+      <span class="dot" id="statusDot" title="Checking Ollama…"></span>
+      <span id="statusText">Checking Ollama…</span>
+    </div>
+    <button class="ghost" id="newChatBtn" title="Start a new chat">New chat</button>
+  </header>
+
+  <main class="panes">
+    <!-- Left: chat -->
+    <section class="pane pane-chat">
+      <div class="pane-head">Chat</div>
+      <div class="messages" id="messages">
+        <div class="welcome" id="welcome">
+          <div class="welcome-big">Hi there! 👋</div>
+          <div class="welcome-sub" id="welcomeSub">
+            Ask me how to make something in Scratch, in English or in Български.
+          </div>
+          <ul class="examples" id="examples">
+            <li data-q="How do I make the cat walk and say hello when the game starts?">How do I make the cat walk and say hello?</li>
+            <li data-q="Как да накарам котката да подскача, когато щракна зелено знаме?">Как да накарам котката да подскача?</li>
+            <li data-q="How can I keep score when the player clicks something?">How can I keep score?</li>
+          </ul>
+        </div>
+      </div>
+      <form class="composer" id="composer" autocomplete="off">
+        <textarea id="input" rows="1" placeholder="Ask how to do something in Scratch… (Enter to send, Shift+Enter for a new line)" disabled></textarea>
+        <button id="sendBtn" type="submit" disabled>Send</button>
+      </form>
+    </section>
+
+    <!-- Right: scratch blocks -->
+    <section class="pane pane-blocks">
+      <div class="pane-head">Scratch blocks</div>
+      <div class="blocks-scroll" id="blocksScroll">
+        <div class="blocks-empty" id="blocksEmpty">
+          <div class="blocks-empty-big">🧩</div>
+          <div>Your Scratch blocks will appear here.<br>Ask a question on the left to begin.</div>
+        </div>
+        <div class="blocks-host" id="blocksHost"></div>
+        <div class="blocks-warn" id="blocksWarn" hidden></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="vendor/scratchblocks.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

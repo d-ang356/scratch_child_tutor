@@ -1,0 +1,13 @@
+{
+  "name": "scratch_helper",
+  "version": "1.0.0",
+  "description": "A small, friendly local web helper that teaches **Scratch 3.0** (the offline desktop editor) to a young child. You ask how to make something — in **English** or **Български** — and a tutor (the `glm-5.2:cloud` model via your local Ollama app) explains the steps on the left and draws the actual Scratch blocks on the right.",
+  "main": "_dump.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
