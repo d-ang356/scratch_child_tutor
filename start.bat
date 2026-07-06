@@ -8,5 +8,5 @@ if errorlevel 1 (
   exit /b 1
 )
 echo Starting Scratch Helper...
-node "%~dp0server.js"
+node --no-warnings "%~dp0server.js"
 pause

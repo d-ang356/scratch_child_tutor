@@ -11,53 +11,97 @@
     <div class="brand">
       <span class="logo">🐱</span>
       <div>
-        <div class="title">Scratch Helper</div>
-        <div class="subtitle">Your friendly Scratch 3.0 tutor</div>
+        <div class="title" data-i18n="title">Scratch Helper</div>
+        <div class="subtitle" data-i18n="subtitle">Your friendly Scratch 3.0 tutor</div>
       </div>
     </div>
     <div class="status" id="status">
-      <span class="dot" id="statusDot" title="Checking Ollama…"></span>
-      <span id="statusText">Checking Ollama…</span>
+      <span class="dot" id="statusDot" title=""></span>
+      <span id="statusText"></span>
     </div>
-    <button class="ghost" id="newChatBtn" title="Start a new chat">New chat</button>
+    <button class="ghost" id="chatsBtn" data-i18n="chats" title="">Chats</button>
+    <button class="ghost icon" id="prefsBtn" data-i18n-title="prefs" title="Preferences" aria-label="Preferences">⚙️</button>
+    <button class="ghost" id="newChatBtn" data-i18n="newChat" title="">New chat</button>
   </header>
+
+  <!-- Chat history drawer -->
+  <div class="drawer-backdrop" id="chatBackdrop" hidden aria-hidden="true"></div>
+  <aside class="drawer" id="chatDrawer" hidden>
+    <div class="drawer-head">
+      <span data-i18n="chatsTitle">Your chats</span>
+      <button class="ghost icon" id="drawerClose" aria-label="Close">×</button>
+    </div>
+    <div class="drawer-list" id="chatList"></div>
+  </aside>
 
   <main class="panes">
     <!-- Left: chat -->
     <section class="pane pane-chat">
-      <div class="pane-head">Chat</div>
+      <div class="pane-head" data-i18n="chatHead">Chat</div>
       <div class="messages" id="messages">
         <div class="welcome" id="welcome">
-          <div class="welcome-big">Hi there! 👋</div>
-          <div class="welcome-sub" id="welcomeSub">
+          <div class="welcome-big" data-i18n="welcomeBig">Hi there! 👋</div>
+          <div class="welcome-sub" id="welcomeSub" data-i18n="welcomeSub">
             Ask me how to make something in Scratch, in English or in Български.
           </div>
-          <ul class="examples" id="examples">
-            <li data-q="How do I make the cat walk and say hello when the game starts?">How do I make the cat walk and say hello?</li>
-            <li data-q="Как да накарам котката да подскача, когато щракна зелено знаме?">Как да накарам котката да подскача?</li>
-            <li data-q="How can I keep score when the player clicks something?">How can I keep score?</li>
-          </ul>
+          <ul class="examples" id="examples"></ul>
         </div>
       </div>
       <form class="composer" id="composer" autocomplete="off">
-        <textarea id="input" rows="1" placeholder="Ask how to do something in Scratch… (Enter to send, Shift+Enter for a new line)" disabled></textarea>
-        <button id="sendBtn" type="submit" disabled>Send</button>
+        <textarea id="input" rows="1" data-i18n-ph="composerPh" placeholder="Ask how to do something in Scratch…" disabled></textarea>
+        <button id="sendBtn" type="submit" data-i18n="send" disabled>Send</button>
       </form>
     </section>
 
-    <!-- Right: scratch blocks -->
+    <!-- Right: scratch blocks with sub-tabs -->
     <section class="pane pane-blocks">
-      <div class="pane-head">Scratch blocks</div>
+      <div class="pane-head blocks-head">
+        <span data-i18n="blocksHead">Scratch blocks</span>
+        <div class="block-tabs" id="blockTabs"></div>
+      </div>
       <div class="blocks-scroll" id="blocksScroll">
         <div class="blocks-empty" id="blocksEmpty">
           <div class="blocks-empty-big">🧩</div>
-          <div>Your Scratch blocks will appear here.<br>Ask a question on the left to begin.</div>
+          <div data-i18n="blocksEmpty">Your Scratch blocks will appear here.<br>Ask a question on the left to begin.</div>
         </div>
         <div class="blocks-host" id="blocksHost"></div>
         <div class="blocks-warn" id="blocksWarn" hidden></div>
       </div>
     </section>
   </main>
+
+  <!-- Preferences modal -->
+  <div class="modal-overlay" id="prefsModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <span data-i18n="prefsTitle">Preferences</span>
+        <button class="ghost icon" id="prefsClose" aria-label="Close">✕</button>
+      </div>
+      <form id="prefsForm" class="modal-body">
+        <div class="field">
+          <label data-i18n="prefsLang">App language</label>
+          <div class="radio-row">
+            <label><input type="radio" name="pLang" value="en" checked> <span data-i18n="langEn">English</span></label>
+            <label><input type="radio" name="pLang" value="bg"> <span data-i18n="langBg">Български</span></label>
+          </div>
+        </div>
+        <div class="field">
+          <label data-i18n="prefsAge">Child's age (whole number, 1–17)</label>
+          <input type="number" id="pAge" min="1" max="17" step="1" inputmode="numeric" />
+          <div class="field-hint" data-i18n="prefsAgeHint">Used to match the tutor's words to the child.</div>
+          <div class="field-err" id="pAgeErr" hidden></div>
+        </div>
+        <div class="field">
+          <label data-i18n="prefsName">Child's name or nickname (optional)</label>
+          <input type="text" id="pName" maxlength="40" data-i18n-ph="prefsNamePh" placeholder="e.g. Mia" />
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="ghost" id="prefsCancel" data-i18n="cancel">Cancel</button>
+          <button type="submit" class="primary" data-i18n="save">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
 
   <script src="vendor/scratchblocks.min.js"></script>
   <script src="app.js"></script>

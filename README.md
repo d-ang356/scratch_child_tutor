@@ -6,16 +6,20 @@ or **Български** — and a tutor (the `glm-5.2:cloud` model via your lo
 app) explains the steps on the left and draws the actual Scratch blocks on the
 right.
 
-No history, no RAG, no accounts. A page refresh starts a brand-new chat.
+No accounts, no RAG. Chats **are saved locally** on your machine (a tiny SQLite
+file) so you can come back to them — open the **“Твоите чатове” / “Your chats”**
+drawer from the top bar. Deleting a chat or clearing the file removes them.
 
 ```
 your browser  ──/api/chat──▶  this server (node, no deps)  ──▶  local Ollama app  ──▶  Ollama Cloud (glm-5.2)
    left pane: chat                right pane: scratchblocks SVG (EN + Български)
+        │
+        └─/api/chats──▶  scratch_helper.db (local SQLite: chat history + prefs)
 ```
 
 ## Requirements
 
-1. **Node.js** (any recent version; v18+). — https://nodejs.org
+1. **Node.js 22.5+** (uses the built-in `node:sqlite` for chat history). — https://nodejs.org
 2. **The Ollama desktop app** installed, running, and **signed in** to Ollama
    Cloud so the `:cloud` models work:
    - Start the Ollama app.
@@ -50,14 +54,18 @@ address it used.
 - The **left pane** is the chat — the tutor explains the goal and the steps.
 - The **right pane** shows the Scratch blocks, drawn the way they look in the
   editor, in the same language you asked in.
-- **New chat** (top-right) or just refresh the page to start over.
+- A **🤔 Thinking…** indicator appears the moment you send, while the model is
+  still reasoning (and while the server checks the topic is on-Scratch).
+- **New chat** (top-right) starts a fresh conversation. **Chats** (top bar) opens
+  the history drawer — every conversation is saved locally and can be reopened
+  or deleted there.
 
 ## What’s inside
 
 ```
-server.js                  tiny proxy + static server (Node, zero dependencies)
+server.js                  tiny proxy + static server + SQLite history (zero deps)
 public/
-  index.html               two-pane page
+  index.html               two-pane page + chats drawer + preferences modal
   app.js                   streaming chat + fenced-block parsing + rendering
   styles.css               dark, Claude-style two-pane look
   vendor/scratchblocks.min.js  the block renderer (vendored, MIT, v3.7.0)
@@ -65,7 +73,13 @@ public/
 scratchblocks-prompts/
   system.md                the tutor system prompt (bilingual, with cheat-sheets)
 start.bat / start.sh       launchers
+scratch_helper.db          local SQLite chat history (created on first run)
+preferences.json           child's language/age/name (created when you save prefs)
 ```
+
+The server exposes a small JSON API: `/api/chat` (streaming tutor answer),
+`/api/preferences`, `/api/health`, and `/api/chats` + `/api/chats/:id` +
+`/api/chats/:id/messages` for local history.
 
 ## How the language works
 
@@ -97,9 +111,12 @@ start.bat / start.sh       launchers
 
 ## Privacy
 
-Everything is local: the page, the proxy, and the model call go through your own
-machine's Ollama app. The only network hop is your local Ollama app → Ollama
-Cloud (for the `:cloud` model). No chat is stored anywhere — refresh clears it.
+Everything runs locally: the page, the proxy, and the chat history all live on
+your own machine. The only network hop is your local Ollama app → Ollama Cloud
+(for the `:cloud` model). Chat history and preferences are stored in
+`scratch_helper.db` / `preferences.json` next to the server — never sent anywhere.
+Remove them anytime (`rm -f preferences.json scratch_helper.db scratch_helper.db-*`),
+or delete individual chats from the drawer.
 
 ## License
 

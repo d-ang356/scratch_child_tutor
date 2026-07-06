@@ -8,4 +8,4 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 DIR="$(cd "$(dirname "$0")" && pwd)"
 echo "Starting Scratch Helper..."
-exec node "$DIR/server.js"
+exec node --no-warnings "$DIR/server.js"

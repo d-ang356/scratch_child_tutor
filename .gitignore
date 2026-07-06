@@ -363,3 +363,10 @@ plan.md
 TODO.md
 NOTES.md
 
+# User-specific local data (preferences + chat history)
+preferences.json
+scratch_helper.db
+scratch_helper.db-journal
+scratch_helper.db-wal
+scratch_helper.db-shm
+
