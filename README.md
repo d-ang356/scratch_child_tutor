@@ -147,6 +147,16 @@ your own machine. The only network hop is your local Ollama app → Ollama Cloud
 Remove them anytime (`rm -f preferences.json scratch_helper.db scratch_helper.db-*`),
 or delete individual chats from the drawer.
 
+## Assets
+
+- **Logo / favicon (`img/logo.png`)**: generated with **Google Gemini** using the
+  free tier (as of the March 2026 Gemini terms). Google does not claim ownership
+  over generated content, and you may use generated content commercially in
+  accordance with applicable law. Google may generate the same or similar content
+  for others, may use free-tier prompts/responses to improve its products, and
+  embeds an invisible SynthID watermark in generated images. See the
+  [Gemini API Additional Terms of Service](https://ai.google.dev/gemini-api/terms).
+
 ## License
 
 The included `scratchblocks.min.js` and `locales/bg.json` are MIT-licensed

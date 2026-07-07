@@ -34,6 +34,7 @@ const OLLAMA_BASE = process.env.OLLAMA_BASE || 'http://localhost:11434';
 const MODEL = process.env.SCRATCH_MODEL || 'glm-5.2:cloud';
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
+const IMG_DIR = path.join(__dirname, 'img');
 const SYSTEM_PROMPT_PATH = path.join(__dirname, 'scratchblocks-prompts', 'system.md');
 const PREFS_PATH = path.join(__dirname, 'preferences.json');
 const DB_PATH = path.join(__dirname, 'scratch_helper.db');
@@ -148,10 +149,15 @@ function readBody(req) {
 function serveStatic(req, res) {
   let urlPath = decodeURIComponent(req.url.split('?')[0]);
   if (urlPath === '/') urlPath = '/index.html';
-  // Normalize and prevent path traversal outside public/. Use a separator so a
-  // sibling whose name begins with "public" (e.g. "publicsecret") can't slip in.
-  const resolved = path.normalize(path.join(PUBLIC_DIR, urlPath));
-  if (resolved !== PUBLIC_DIR && !resolved.startsWith(PUBLIC_DIR + path.sep)) {
+  // /img/ is served from the repo-root img/ dir (screenshots + logo), so the
+  // web app and the README share one source of truth. Everything else is served
+  // from public/. Strip the /img/ prefix so we join under the right base, then
+  // normalize + guard path traversal for that base.
+  const isImg = urlPath.startsWith('/img/');
+  const base = isImg ? IMG_DIR : PUBLIC_DIR;
+  const rel = isImg ? urlPath.slice('/img/'.length) : urlPath;
+  const resolved = path.normalize(path.join(base, rel));
+  if (resolved !== base && !resolved.startsWith(base + path.sep)) {
     return sendJSON(res, 403, { error: 'forbidden' });
   }
   fs.stat(resolved, (err, stat) => {
