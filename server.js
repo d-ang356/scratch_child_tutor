@@ -343,6 +343,12 @@ function classifyTopic(clean, cb) {
   // the independent second safety layer, so trimming context here is safe.
   const latest = lastUserMessage(clean);
   if (!latest) return cb(null); // nothing to classify -> fail open to the tutor
+  // The classifier must resolve exactly once. The 30s timeout can race with a
+  // late 'end'/'error' from a slow cloud model: without this guard, cb fires
+  // twice, handleChat calls streamAnswer twice on the same response, and the
+  // second res.writeHead() throws ERR_HTTP_HEADERS_SENT and kills the process.
+  let settled = false;
+  const done = (v) => { if (settled) return; settled = true; cb(v); };
   const ollamaURL = new URL(`${OLLAMA_BASE}/v1/chat/completions`);
   const payload = JSON.stringify({
     model: MODEL,
@@ -367,16 +373,16 @@ function classifyTopic(clean, cb) {
           const parsed = JSON.parse(data);
           const content = (((parsed.choices || [])[0] || {}).message || {}).content || '';
           const verdict = content.trim().toUpperCase();
-          if (verdict.startsWith('SCRATCH')) return cb('SCRATCH');
-          if (verdict.startsWith('OTHER')) return cb('OTHER');
-          return cb(null); // unclear -> fail open
-        } catch (e) { cb(null); }
+          if (verdict.startsWith('SCRATCH')) return done('SCRATCH');
+          if (verdict.startsWith('OTHER')) return done('OTHER');
+          return done(null); // unclear -> fail open
+        } catch (e) { done(null); }
       });
-      up.on('error', () => cb(null));
+      up.on('error', () => done(null));
     }
   );
-  upstream.on('error', () => cb(null));
-  upstream.setTimeout(30000, () => { try { upstream.destroy(); } catch (_) {} cb(null); });
+  upstream.on('error', () => done(null));
+  upstream.setTimeout(30000, () => { try { upstream.destroy(); } catch (_) {} done(null); });
   upstream.write(payload);
   upstream.end();
 }
@@ -406,7 +412,13 @@ function handleChat(req, res) {
       .map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }));
 
     // Safety gate: refuse non-Scratch input before the tutor answers.
+    // Guard the verdict handler so a duplicate classifier callback (e.g. a
+    // timeout racing a late response) can never start a second stream/refusal
+    // on the same response.
+    let handled = false;
     classifyTopic(clean, (verdict) => {
+      if (handled) return;
+      handled = true;
       if (verdict === 'OTHER') return emitRefusal(res, clean);
       streamAnswer(clean, body.temperature ?? 0.6, res);
     });
@@ -414,6 +426,9 @@ function handleChat(req, res) {
 }
 
 function streamAnswer(clean, temperature, res) {
+  // Defense in depth: never touch a response that's already being sent/end-ed,
+  // so no upstream double-fire can crash the process with ERR_HTTP_HEADERS_SENT.
+  if (res.headersSent || res.writableEnded) return;
   const messages = [{ role: 'system', content: buildSystemPrompt() }, ...clean];
   const ollamaURL = new URL(`${OLLAMA_BASE}/v1/chat/completions`);
   const payload = JSON.stringify({
