@@ -48,7 +48,7 @@
         </div>
       </div>
       <form class="composer" id="composer" autocomplete="off">
-        <textarea id="input" rows="1" data-i18n-ph="composerPh" placeholder="Ask how to do something in Scratch…" disabled></textarea>
+        <textarea id="input" rows="2" data-i18n-ph="composerPh" placeholder="Ask how to do something in Scratch…" disabled></textarea>
         <button id="sendBtn" type="submit" data-i18n="send" disabled>Send</button>
       </form>
     </section>
@@ -59,6 +59,7 @@
         <span data-i18n="blocksHead">Scratch blocks</span>
         <div class="block-tabs" id="blockTabs"></div>
       </div>
+      <button class="scroll-to-msg" id="scrollToMsgBtn" title="Jump to the matching message" hidden>↖</button>
       <div class="blocks-scroll" id="blocksScroll">
         <div class="blocks-empty" id="blocksEmpty">
           <div class="blocks-empty-big">🧩</div>

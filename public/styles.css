@@ -97,10 +97,14 @@ body {
 
 .composer { flex: 0 0 auto; display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--border); background: var(--bg-2); }
 #input {
-  flex: 1 1 auto; resize: none; max-height: 140px; padding: 11px 12px; border-radius: 10px;
+  flex: 1 1 auto; resize: none; min-height: 46px; max-height: 140px; padding: 11px 12px; border-radius: 10px;
   border: 1px solid var(--border); background: var(--bg-input); color: var(--text);
-  font-size: 15px; font-family: inherit; line-height: 1.4; outline: none;
+  font-size: 15px; font-family: inherit; line-height: 1.45; outline: none;
+  /* Keep the placeholder fully visible when the textarea is empty */
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
 }
+#input::placeholder { color: var(--text-dim); opacity: 1; }
 #input:focus { border-color: var(--accent); }
 #sendBtn {
   flex: 0 0 auto; padding: 0 18px; border: none; border-radius: 10px; background: var(--accent);
@@ -120,9 +124,18 @@ body {
 .blocks-error { color: var(--bad); font-size: 14px; padding: 12px; background: rgba(229,83,75,.1); border: 1px solid var(--bad); border-radius: 10px; }
 
 /* Blocks pane head with tabs */
+.pane-blocks { position: relative; }
 .blocks-head { display: flex; align-items: center; gap: 12px; }
 .blocks-head > span { flex: 0 0 auto; }
 .block-tabs { flex: 1 1 auto; display: flex; gap: 6px; overflow-x: auto; }
+.scroll-to-msg {
+  position: absolute; top: 46px; right: 14px; z-index: 10;
+  border: 1px solid var(--border); background: var(--bg-3); color: var(--text-dim);
+  border-radius: 8px; padding: 5px 9px; font-size: 15px; cursor: pointer;
+  opacity: .35; transition: opacity .15s, color .15s, background .15s;
+  pointer-events: auto;
+}
+.scroll-to-msg:hover { opacity: 1; color: var(--accent); background: var(--bg-2); }
 .block-tabs:empty { display: none; }
 .tab {
   flex: 0 0 auto; padding: 4px 12px; border-radius: 999px; border: 1px solid var(--border);

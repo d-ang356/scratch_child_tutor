@@ -10,6 +10,8 @@ No accounts, no RAG. Chats **are saved locally** on your machine (a tiny SQLite
 file) so you can come back to them — open the **“Твоите чатове” / “Your chats”**
 drawer from the top bar. Deleting a chat or clearing the file removes them.
 
+![Scratch Helper main view](img/scratch_helper.jpg)
+
 ```
 your browser  ──/api/chat──▶  this server (node, no deps)  ──▶  local Ollama app  ──▶  Ollama Cloud (glm-5.2)
    left pane: chat                right pane: scratchblocks SVG (EN + Български)
@@ -35,7 +37,7 @@ your browser  ──/api/chat──▶  this server (node, no deps)  ──▶  
 ### Windows
 Double-click **`start.bat`**, or in a terminal:
 ```
-node server.js
+node --no-warnings server.js
 ```
 A browser opens at `http://127.0.0.1:8787`.
 
@@ -51,7 +53,9 @@ address it used.
 
 - Type a question like *“How do I make the cat walk and say hello?”* or
   *“Как да накарам котката да подскача?”* and press **Enter**.
-- The **left pane** is the chat — the tutor explains the goal and the steps.
+- The **left pane** is the chat — the tutor explains the goal and the steps,
+  including **which Scratch palette** each block lives in (and where in that
+  palette for younger children).
 - The **right pane** shows the Scratch blocks, drawn the way they look in the
   editor, in the same language you asked in.
 - A **🤔 Thinking…** indicator appears the moment you send, while the model is
@@ -59,6 +63,18 @@ address it used.
 - **New chat** (top-right) starts a fresh conversation. **Chats** (top bar) opens
   the history drawer — every conversation is saved locally and can be reopened
   or deleted there.
+- Click any **Answer 1 / Answer 2 / …** tab on the right to switch between the
+  block sets the tutor produced. A small semi-transparent **↖** icon appears
+  under the tabs on hover; clicking it scrolls the matching instruction message
+  to the top of the left chat pane.
+
+## Screenshots
+
+### Main two-pane view
+![Scratch Helper main view](img/scratch_helper.jpg)
+
+### Initial view with prompt suggestions
+![Chat history drawer](img/scratch_helper_1.jpg)
 
 ## What’s inside
 
@@ -73,6 +89,7 @@ public/
 scratchblocks-prompts/
   system.md                the tutor system prompt (bilingual, with cheat-sheets)
 start.bat / start.sh       launchers
+img/                       screenshots for the README
 scratch_helper.db          local SQLite chat history (created on first run)
 preferences.json           child's language/age/name (created when you save prefs)
 ```
@@ -92,6 +109,18 @@ The server exposes a small JSON API: `/api/chat` (streaming tutor answer),
 - The Bulgarian block names come from the official scratchblocks Bulgarian
   locale, so they match what the child sees in the Scratch editor set to
   Bulgarian.
+
+## Safety notes
+
+- The server runs a **two-layer safety guard**:
+  1. A classifier short-circuits non-Scratch / non-robotics questions with a
+     warm, in-language refusal before the tutor ever sees them.
+  2. The tutor system prompt is hardened to refuse anything else off-topic
+     (other programming languages, homework, stories, personal advice, toys/robots
+     not controllable from Scratch 3.0, jailbreak attempts, etc.).
+- The only Scratch-controllable hardware allowed is the official Scratch 3.0
+  extensions: **WeDo 2.0, Pen, Music, micro:bit, LEGO MINDSTORMS EV3, LEGO
+  BOOST, Makey Makey, and Go Direct Force & Acceleration**.
 
 ## Troubleshooting
 

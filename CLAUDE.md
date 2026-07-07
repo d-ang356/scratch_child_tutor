@@ -19,11 +19,14 @@ blocks on the right with scratchblocks.
     ever sees them. It feeds the classifier **only the latest user message**
     (not the whole history) — see performance note below.
 - `public/app.js` — streaming frontend with i18n, preferences modal, chat drawer,
-  and right-pane block sub-tabs (one tab per assistant answer that contains blocks).
+  right-pane block sub-tabs (one tab per assistant answer that contains blocks),
+  and a hover “↖” icon under each tab that scrolls to the matching chat message.
 - `public/index.html` + `styles.css` — two-pane dark Claude-style UI.
 - `scratchblocks-prompts/system.md` — the full bilingual tutor system prompt.
   - It is prepended to every chat (plus a short per-child context from prefs).
   - Contains hard safety rules: only Scratch 3.0 + official Scratch extensions.
+  - Tells the child **which Scratch palette** each block lives in, and where in
+    the palette for ages ≤8.
 - `public/vendor/scratchblocks.min.js` + `public/locales/bg.json` — block renderer.
 
 ## How to run
@@ -58,6 +61,9 @@ Or manually: `node --no-warnings server.js` and open `http://127.0.0.1:8787`.
    after the stream completes; history is sent back as context on the next turn.
 7. **Right pane tabs.** Each assistant answer that contains a fenced `scratchblocks`
    block becomes a tab; multiple `---` scripts within one answer stack inside that tab.
+   A hover “↖” icon jumps to the matching instruction message in the chat.
+8. **Loaded chats scroll to the bottom of the last message** so the latest turn is
+   always visible.
 
 ## File structure
 ```

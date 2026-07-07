@@ -23,6 +23,7 @@ const chatList = $("chatList");
 const drawerClose = $("drawerClose");
 const blockTabsEl = $("blockTabs");
 const chatBackdrop = $("chatBackdrop");
+const scrollToMsgBtn = $("scrollToMsgBtn");
 const prefsModal = $("prefsModal");
 const prefsForm = $("prefsForm");
 const prefsClose = $("prefsClose");
@@ -48,13 +49,15 @@ const STRINGS = {
     blocksHead: "Scratch blocks",
     welcomeBig: "Hi there! 👋",
     welcomeSub: "Ask me how to make something in Scratch, in English or in Български.",
-    composerPh: "Ask how to do something in Scratch… (Enter to send, Shift+Enter for a new line)",
+    composerPh: "Ask about Scratch…",
+    composerTip: "Enter to send, Shift+Enter for a new line",
     send: "Send",
     stop: "Stop",
     chatsTitle: "Your chats",
     drawerEmpty: "No chats yet. Ask a question to start one!",
     blocksEmpty: "Your Scratch blocks will appear here.<br>Ask a question on the left to begin.",
     tabLabel: (n) => `Answer ${n}`,
+    scrollToMsg: "Jump to the matching message",
     prefsTitle: "Preferences",
     prefsLang: "App language",
     langEn: "English",
@@ -96,13 +99,15 @@ const STRINGS = {
     blocksHead: "Блокове на Scratch",
     welcomeBig: "Здравей! 👋",
     welcomeSub: "Попитай ме как да направиш нещо в Scratch — на английски или на български.",
-    composerPh: "Попитай как да направиш нещо в Scratch… (Enter за изпращане, Shift+Enter за нов ред)",
+    composerPh: "Попитай за Scratch…",
+    composerTip: "Enter за изпращане, Shift+Enter за нов ред",
     send: "Изпрати",
     stop: "Стоп",
     chatsTitle: "Твоите чатове",
     drawerEmpty: "Все още няма чатове. Задай въпрос, за да започнеш!",
     blocksEmpty: "Твоите блокове ще се появят тук.<br>Задай въпрос отляво, за да започнеш.",
     tabLabel: (n) => `Отговор ${n}`,
+    scrollToMsg: "Премини към съобщението",
     prefsTitle: "Настройки",
     prefsLang: "Език на приложението",
     langEn: "English",
@@ -137,6 +142,12 @@ const t = (key, ...args) => {
   return typeof v === "function" ? v(...args) : v;
 };
 
+let currentStatus = { key: "checking", args: [] };
+function showStatus(key, ...args) {
+  currentStatus = { key, args };
+  statusText.textContent = t(key, ...args) || "";
+}
+
 function applyI18n(lang) {
   LANG = lang === "bg" ? "bg" : "en";
   document.documentElement.lang = LANG;
@@ -161,13 +172,11 @@ function applyI18n(lang) {
     li.textContent = label;
     examplesEl.appendChild(li);
   });
-  // Re-render status text in the current language.
-  if (statusText.textContent || !streaming) refreshStatusText();
-}
-
-function refreshStatusText() {
-  // Keeps the status text in the current language after applyI18n / health changes.
-  // The actual text is set in checkHealth; this just re-localizes the idle states.
+  // Re-render status text and input hint in the current language.
+  showStatus(currentStatus.key, ...currentStatus.args);
+  inputEl.title = t("composerTip") || "";
+  scrollToMsgBtn.title = t("scrollToMsg") || "";
+  autoGrow();
 }
 
 /* ---------- State ---------- */
@@ -198,31 +207,31 @@ let liveRenderedSig = null; // signature of blocks already rendered during the l
 /* ---------- Health ---------- */
 async function checkHealth() {
   statusDot.className = "dot";
-  statusText.textContent = t("statusChecking");
+  showStatus("statusChecking");
   try {
     const res = await fetch("/api/health");
     const info = await res.json();
     if (info.ollamaUp && info.modelAvailable) {
       ollamaOk = true; clearHealthTimer();
       statusDot.className = "dot ok";
-      statusText.textContent = t("statusReady");
+      showStatus("statusReady");
       enableInput(true);
     } else if (info.ollamaUp && !info.modelAvailable) {
       ollamaOk = true; clearHealthTimer();
       statusDot.className = "dot";
-      statusText.textContent = t("statusModelMissing", info.model);
+      showStatus("statusModelMissing", info.model);
       enableInput(true);
     } else {
       ollamaOk = false;
       statusDot.className = "dot bad";
-      statusText.textContent = t("statusDown");
+      showStatus("statusDown");
       enableInput(false);
       scheduleHealthRetry();
     }
   } catch (e) {
     ollamaOk = false;
     statusDot.className = "dot bad";
-    statusText.textContent = t("statusServer");
+    showStatus("statusServer");
     enableInput(false);
     scheduleHealthRetry();
   }
@@ -351,20 +360,43 @@ function renderTabs() {
   });
 }
 function selectTab(i) {
-  if (i < 0 || i >= tabs.length) return;
+  if (i < 0 || i >= tabs.length) {
+    scrollToMsgBtn.hidden = true;
+    return;
+  }
   activeTab = i;
   renderTabs();
   renderBlocks(tabs[i].markup);
+  scrollToMsgBtn.hidden = false;
 }
-function addTab(markup) {
+function addTab(markup, bubble) {
   if (!markup || !markup.trim()) return;
-  tabs.push({ label: t("tabLabel", tabs.length + 1), markup });
+  tabs.push({ label: t("tabLabel", tabs.length + 1), markup, bubble });
   selectTab(tabs.length - 1);
 }
 function clearTabs() {
   tabs = []; activeTab = -1; blockTabsEl.innerHTML = "";
   blocksHost.innerHTML = ""; blocksWarn.hidden = true; blocksEmpty.hidden = false;
+  scrollToMsgBtn.hidden = true;
 }
+
+function scrollToMessage(bubble) {
+  if (!bubble) return;
+  const wrap = bubble.parentElement;
+  if (!wrap) return;
+  // Align the top of the matching message with the top of the chat area.
+  wrap.scrollIntoView({ block: "start", behavior: "smooth" });
+}
+
+function scrollMessagesToBottom() {
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+scrollToMsgBtn.addEventListener("click", () => {
+  if (activeTab >= 0 && tabs[activeTab] && tabs[activeTab].bubble) {
+    scrollToMessage(tabs[activeTab].bubble);
+  }
+});
 
 /* ---------- Chat send / stream ---------- */
 function appendMsg(role, who) {
@@ -499,7 +531,7 @@ async function send(question) {
       const expl = openMatch ? content.slice(0, openMatch.index) : content;
       aiBubble.innerHTML = renderMarkdown(expl) + `<p><em>${t("stopped")}</em></p>`;
       const blocks = extractBlocks(content) || (content.match(FENCE_LOOSE) || [])[1] || "";
-      if (blocks.trim()) addTab(blocks);
+      if (blocks.trim()) addTab(blocks, aiBubble);
     } else {
       aiBubble.innerHTML = renderMarkdown(t("connLost", e.message));
     }
@@ -545,7 +577,7 @@ function finalize(content, reasoning, aiBubble) {
 
   const blocks = extractBlocks(content);
   if (blocks.trim()) {
-    addTab(blocks);
+    addTab(blocks, aiBubble);
   } else if (tabs.length === 0) {
     // No blocks this turn (e.g. a polite off-topic refusal) and no prior tabs:
     // show the friendly empty state rather than a scary error.
@@ -646,13 +678,16 @@ async function loadChat(id) {
         const b = appendMsg("assistant", t("tutor"));
         b.innerHTML = renderAssistantContent(m.content);
         const blocks = m.blocks || extractBlocks(m.content);
-        if (blocks && blocks.trim()) addTab(blocks);
+        if (blocks && blocks.trim()) addTab(blocks, b);
       }
     });
     if (chatMessages.length === 0) showWelcome();
     if (tabs.length) selectTab(tabs.length - 1);
     else clearTabs();
+    // When loading a saved chat, jump to the bottom of the last message.
+    scrollMessagesToBottom();
     chatDrawer.hidden = true;
+    chatBackdrop.hidden = true;
     refreshChatList();
   } catch (e) { /* ignore */ }
 }
@@ -697,6 +732,7 @@ async function loadPreferences() {
   } catch (e) { /* ignore */ }
   if (prefs) {
     applyI18n(prefs.lang);
+    checkHealth();
     enableInput(ollamaOk);
   } else {
     // First run (or incomplete prefs): force the modal.
@@ -748,6 +784,7 @@ prefsForm.addEventListener("submit", async (e) => {
   }
   prefs = data.prefs;
   applyI18n(prefs.lang);
+  checkHealth();
   prefsModal.dataset.first = "";
   prefsModal.hidden = true;
   enableInput(ollamaOk);
