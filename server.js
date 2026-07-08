@@ -19,6 +19,7 @@
  */
 
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -28,10 +29,53 @@ const { exec } = require('child_process');
 let DatabaseSync = null;
 try { ({ DatabaseSync } = require('node:sqlite')); } catch (e) { /* fall back to warning below */ }
 
+// Zero-dependency .env loader. If a .env file sits next to server.js, parse
+// simple KEY=VALUE lines into process.env before the config constants below
+// read them. Vars already set in the real environment are NOT overridden, so
+// explicit shell exports win over the file. Lets you test the Ollama Cloud API
+// by dropping in a .env instead of exporting env vars. .env is gitignored, so
+// API keys placed there are not committed.
+function loadEnvFile() {
+  let text;
+  try { text = fs.readFileSync(path.join(__dirname, '.env'), 'utf8'); }
+  catch (e) { return; } // no .env present — nothing to do
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const m = line.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (!m) continue;
+    let val = m[2].trim();
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    }
+    if (process.env[m[1]] === undefined) process.env[m[1]] = val;
+  }
+}
+loadEnvFile();
+
 const HOST = '127.0.0.1';
 const PORTS = [8787, 8788, 8789, 8790];
 const OLLAMA_BASE = process.env.OLLAMA_BASE || 'http://localhost:11434';
+const OLLAMA_API_KEY = process.env.OLLAMA_API_KEY || null;
 const MODEL = process.env.SCRATCH_MODEL || 'glm-5.2:cloud';
+
+// Two ways to reach the model:
+//  - Local Ollama app (default): OLLAMA_BASE=http://localhost:11434, no key.
+//    The local daemon ignores the Authorization header, so a placeholder is
+//    harmless. Cloud-proxied models use a ":cloud" suffix (e.g. glm-5.2:cloud)
+//    and the daemon signs the upstream request itself after `ollama signin`.
+//  - Direct Ollama Cloud API: OLLAMA_BASE=https://ollama.com + OLLAMA_API_KEY.
+//    Requires a real Bearer key, speaks HTTPS, and the model name must NOT carry
+//    the ":cloud" suffix (e.g. glm-5.2) — the suffix is only a local routing
+//    signal; the cloud API addresses models by their plain name.
+const IS_CLOUD = /ollama\.com/i.test(OLLAMA_BASE);
+function authHeader() {
+  return OLLAMA_API_KEY ? `Bearer ${OLLAMA_API_KEY}` : 'Bearer ollama';
+}
+// Pick http or https from a URL's protocol so cloud (https://ollama.com) works.
+function pickModule(urlObj) {
+  return urlObj && urlObj.protocol === 'https:' ? https : http;
+}
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const IMG_DIR = path.join(__dirname, 'img');
@@ -173,9 +217,19 @@ function serveStatic(req, res) {
   });
 }
 
-// Probe the local Ollama app for reachability and whether the model is listed.
+// Probe the model backend for reachability. For the local Ollama app we hit
+// /api/tags and check the model is pulled. For the direct Ollama Cloud API
+// there is no "installed models" notion to probe — and /api/tags requires auth
+// the local probe doesn't send — so we short-circuit: presence of an API key is
+// the health signal, and cloud models are addressed by name per-request.
 function checkHealth(callback) {
-  const req = http.get(`${OLLAMA_BASE}/api/tags`, (upstream) => {
+  if (IS_CLOUD) {
+    const ok = !!OLLAMA_API_KEY;
+    return callback({ ok, ollamaUp: ok, model: MODEL, modelAvailable: true, cloud: true });
+  }
+  const tagsURL = new URL(`${OLLAMA_BASE}/api/tags`);
+  const headers = OLLAMA_API_KEY ? { Authorization: authHeader() } : {};
+  const req = pickModule(tagsURL).get(tagsURL, { headers }, (upstream) => {
     let data = '';
     upstream.on('data', (c) => (data += c));
     upstream.on('end', () => {
@@ -363,13 +417,11 @@ function classifyTopic(clean, cb) {
     temperature: 0,
     max_tokens: 5,
   });
-  const upstream = http.request(
+  const upstream = pickModule(ollamaURL).request(
+    ollamaURL,
     {
       method: 'POST',
-      hostname: ollamaURL.hostname,
-      port: ollamaURL.port,
-      path: ollamaURL.pathname,
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ollama', 'Content-Length': Buffer.byteLength(payload) },
+      headers: { 'Content-Type': 'application/json', Authorization: authHeader(), 'Content-Length': Buffer.byteLength(payload) },
     },
     (up) => {
       let data = '';
@@ -444,15 +496,13 @@ function streamAnswer(clean, temperature, res) {
     temperature,
   });
 
-  const upstream = http.request(
+  const upstream = pickModule(ollamaURL).request(
+    ollamaURL,
     {
       method: 'POST',
-      hostname: ollamaURL.hostname,
-      port: ollamaURL.port,
-      path: ollamaURL.pathname,
       headers: {
         'Content-Type': 'application/json',
-        Authorization: 'Bearer ollama',
+        Authorization: authHeader(),
         'Content-Length': Buffer.byteLength(payload),
       },
     },
@@ -532,7 +582,13 @@ function listenOnAvailablePort(i) {
     const base = `http://${HOST}:${port}`;
     console.log(`scratch_helper running at  ${base}`);
     console.log(`Forwarding chat to       ${OLLAMA_BASE}/v1/chat/completions`);
+    console.log(`Backend                  ${IS_CLOUD ? 'Ollama Cloud API' : 'local Ollama app'}${OLLAMA_API_KEY ? ' (API key set)' : ''}`);
     console.log(`Model                    ${MODEL}`);
+    if (IS_CLOUD && /:cloud\b/i.test(MODEL)) {
+      console.log(`WARNING: model name has a ":cloud" suffix but OLLAMA_BASE points at the`);
+      console.log(`         cloud API. The cloud API expects the plain name (e.g. "glm-5.2",`);
+      console.log(`         not "glm-5.2:cloud"). Set SCRATCH_MODEL without the ":cloud" suffix.`);
+    }
     console.log(`System prompt loaded:   ${SYSTEM_PROMPT ? 'yes' : 'NO (missing file!)'}`);
     console.log(`Chat history (sqlite):  ${db ? 'enabled' : 'disabled (node:sqlite unavailable)'}`);
     console.log(`Open the page in your browser. Press Ctrl+C to stop.`);

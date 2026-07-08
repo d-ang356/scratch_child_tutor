@@ -1,6 +1,8 @@
 @echo off
 REM Launch the Scratch Helper on Windows.
-REM Requires Node.js (https://nodejs.org) and the Ollama app running + signed in.
+REM Requires Node.js (https://nodejs.org) and an Ollama backend: either the
+REM local Ollama app running + signed in, or OLLAMA_BASE + OLLAMA_API_KEY env
+REM vars pointing at the Ollama Cloud API (https://ollama.com).
 where node >nul 2>nul
 if errorlevel 1 (
   echo Node.js was not found. Install it from https://nodejs.org and try again.

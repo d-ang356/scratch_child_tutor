@@ -2,15 +2,22 @@
 
 ## What this project is
 A tiny, zero-dependency local web app that teaches **Scratch 3.0** (offline desktop
-editor) to a young child. It uses the local Ollama app talking to the cloud model
-`glm-5.2:cloud`. The browser sends questions to a small Node proxy; the model answers
-in English or Bulgarian, explains the steps on the left, and draws the actual Scratch
-blocks on the right with scratchblocks.
+editor) to a young child. It talks to **any Ollama-hosted model** (default
+`glm-5.2:cloud`) via the OpenAI-compatible `/v1/chat/completions` endpoint — either
+through the local Ollama desktop app or directly to the Ollama Cloud API with a key.
+The browser sends questions to a small Node proxy; the model answers in English or
+Bulgarian, explains the steps on the left, and draws the actual Scratch blocks on the
+right with scratchblocks.
 
 ## Architecture
 - `server.js` — zero-dependency Node HTTP server.
-  - Serves `public/` static files.
-  - Proxies `/api/chat` to local Ollama (`http://localhost:11434/v1/chat/completions`).
+  - Serves `public/` static files (+ `/img/` from the repo-root `img/` dir).
+  - Proxies `/api/chat` to Ollama at `${OLLAMA_BASE}/v1/chat/completions`, picking
+    `http` vs `https` from the URL. Two backends: the local Ollama app
+    (default `http://localhost:11434`, no key) or the Ollama Cloud API
+    (`https://ollama.com` + `OLLAMA_API_KEY`). Auth header is `Bearer ollama`
+    (a harmless placeholder the local daemon ignores) unless `OLLAMA_API_KEY` is
+    set, in which case it's `Bearer <key>`.
   - Reads/writes `preferences.json` via `/api/preferences`.
   - Persists chat history in `scratch_helper.db` using built-in `node:sqlite`
     (Node 22.5+; experimental, so `start.bat`/`start.sh` pass `--no-warnings`).
@@ -35,6 +42,12 @@ start.bat        # Windows
 ./start.sh       # Linux / macOS
 ```
 Or manually: `node --no-warnings server.js` and open `http://127.0.0.1:8787`.
+
+For the Ollama Cloud API instead of the local app:
+```bash
+OLLAMA_BASE=https://ollama.com OLLAMA_API_KEY=<key> SCRATCH_MODEL=glm-5.2 node --no-warnings server.js
+```
+(no `:cloud` suffix in API mode — see rule 9).
 
 ## Key technical rules
 1. **Zero dependencies.** Prefer Node built-ins (`node:sqlite`, `crypto`, `http`).
@@ -64,6 +77,19 @@ Or manually: `node --no-warnings server.js` and open `http://127.0.0.1:8787`.
    A hover “↖” icon jumps to the matching instruction message in the chat.
 8. **Loaded chats scroll to the bottom of the last message** so the latest turn is
    always visible.
+9. **Backend/model is configurable; any Ollama model works.** `OLLAMA_BASE`,
+   `OLLAMA_API_KEY`, and `SCRATCH_MODEL` env vars drive it. `server.js` picks
+   `http`/`https` from `OLLAMA_BASE` (so `https://ollama.com` works) and sends
+   `Authorization: Bearer <OLLAMA_API_KEY>` when a key is set, else a harmless
+   `Bearer ollama` placeholder the local daemon ignores. `checkHealth`
+   short-circuits for the cloud API (`/ollama\.com/`) — `/api/tags` needs auth
+   the local probe doesn't send, and cloud has no "installed models" notion.
+   **`:cloud` suffix rule:** the suffix (e.g. `glm-5.2:cloud`) is a *local-app
+   routing signal* only — the local daemon strips it before proxying to Ollama
+   Cloud. When `OLLAMA_BASE=https://ollama.com` (direct API), use the **plain**
+   model name (`glm-5.2`); the server prints a warning if it sees `:cloud` there.
+   A gitignored `.env` next to `server.js` is loaded at startup (`loadEnvFile`)
+   so you can set these without shell exports; real env vars still override it.
 
 ## File structure
 ```
@@ -88,10 +114,18 @@ start.bat / start.sh            Launchers
   `rm -f preferences.json scratch_helper.db scratch_helper.db-*`
 
 ## Common gotchas
-- The model `glm-5.2:cloud` is a **reasoning model**: it streams `delta.reasoning`
-  before `delta.content`. The UI renders the "Thinking…" indicator **immediately on
-  send** (before any delta) to mask the server-side classifier round-trip; `updateLive`
-  replaces it once reasoning/content actually arrives.
+- The default model (`glm-5.2:cloud`) is a **reasoning model**: it streams
+  `delta.reasoning` before `delta.content`. The UI renders the "Thinking…"
+  indicator **immediately on send** (before any delta) to mask the server-side
+  classifier round-trip; `updateLive` replaces it once reasoning/content actually
+  arrives. A non-reasoning model simply won't emit `delta.reasoning`; the UI
+  still works (it falls back to a cursor while `content` is empty).
+- **Cloud API is HTTPS.** `server.js` uses `pickModule(url)` to choose
+  `http`/`https`; if you ever add another upstream call, route it through the
+  same helper instead of hardcoded `http.request`, or cloud requests will fail
+  with a TLS/protocol error. `checkHealth` deliberately skips `/api/tags` for
+  cloud because that endpoint requires auth and cloud has no "pulled models"
+  list — don't "fix" it by probing `/api/tags` against `ollama.com`.
 - **Pre-thinking latency is the topic gate.** Before the tutor stream can start,
   `handleChat` blocks on one non-streaming cloud round-trip to classify the latest
   user message. That call is the dominant cost before the first token — which is why
