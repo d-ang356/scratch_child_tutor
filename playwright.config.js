@@ -23,6 +23,11 @@ const { defineConfig, devices } = require('@playwright/test');
 
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:8787';
 const DB_PATH = process.env.SCRATCH_DB_PATH || 'test-data/scratch_helper.test.db';
+// Throwaway local prefs path (see tests/support/env.js prefsPath()). Passed to
+// the webServer-launched app so it reads/writes the same file the specs delete.
+// In Docker this is ignored — the app container is reused (reuseExistingServer)
+// and already has SCRATCH_PREFS_PATH=/data/preferences.json from compose.
+const PREFS_PATH = process.env.SCRATCH_PREFS_PATH || 'test-data/preferences.json';
 
 module.exports = defineConfig({
   testDir: './tests',
@@ -77,6 +82,7 @@ module.exports = defineConfig({
       OLLAMA_API_KEY: process.env.OLLAMA_API_KEY || 'mock-dummy-key',
       SCRATCH_MODEL: process.env.SCRATCH_MODEL || 'glm-5.2',
       SCRATCH_DB_PATH: DB_PATH,
+      SCRATCH_PREFS_PATH: PREFS_PATH,
     },
   },
 });

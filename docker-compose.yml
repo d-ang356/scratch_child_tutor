@@ -28,6 +28,12 @@ services:
       OLLAMA_API_KEY: ${OLLAMA_API_KEY:-mock-dummy-key}
       SCRATCH_MODEL: ${SCRATCH_MODEL:-glm-5.2}
       SCRATCH_DB_PATH: /data/scratch_helper.db
+      # preferences.json on the shared /data volume (not the app container's own
+      # /app dir) so the tests container can delete/reset it and the app sees the
+      # change. Without this, initial.spec/gender.spec delete a file the app never
+      # reads and the shared-prefs tests break in Docker (they pass locally only
+      # because there the repo-root file IS the app's file).
+      SCRATCH_PREFS_PATH: /data/preferences.json
       HOST: 0.0.0.0
       PORT: 8787
       SCRATCH_NO_OPEN: "1"
@@ -53,6 +59,10 @@ services:
     environment:
       BASE_URL: http://scratch-app:8787
       SCRATCH_DB_PATH: /data/scratch_helper.db
+      # Same shared prefs path as the app container: the specs fs.unlinkSync this
+      # path to force/reset first-run, and it must be the file the app actually
+      # reads. /data is the shared dbdata volume, mounted here too.
+      SCRATCH_PREFS_PATH: /data/preferences.json
       OLLAMA_BASE: ${OLLAMA_BASE:-https://ollama.com}
       OLLAMA_API_KEY: ${OLLAMA_API_KEY:-mock-dummy-key}
       SCRATCH_MODEL: ${SCRATCH_MODEL:-glm-5.2}

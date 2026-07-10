@@ -145,7 +145,7 @@ tests/
   specs/splashLogo.spec.js      @mock served index.html splash logo matches saved language (no EN flash on BG refresh)
   real/safety.spec.js           @real safety-gate test (off-topic -> refusal; gated on key)
 Dockerfile                      app image (zero-dep, node:22-slim)
-docker-compose.yml              app + official Playwright container (shared DB volume; `expose`, no host port)
+docker-compose.yml              scratch-app + official Playwright container (shared DB + preferences volume; `expose`, no host port)
 .github/workflows/playwright.yml CI: 2 jobs (mock always, real gated on OLLAMA_API_KEY via check-secret; isolated compose projects; workers=1 serial; concurrency cancels superseded runs; reporter guarded + continue-on-error)
 scripts/test.sh / test.bat      no-Docker local test run
 ```
@@ -200,13 +200,28 @@ scripts/test.sh / test.bat      no-Docker local test run
 - Ollama blocks cross-origin browser requests; that is why the same-origin Node proxy
   exists. Do not try to call Ollama directly from `app.js`.
 - Port fallback: `server.js` tries 8787, 8788, 8789, 8790 — unless `PORT` is set,
-  in which case it binds only that port. `HOST` (default `127.0.0.1`) and
-  `SCRATCH_DB_PATH` (default `scratch_helper.db` next to `server.js`) are also
+  in which case it binds only that port. `HOST` (default `127.0.0.1`),
+  `SCRATCH_DB_PATH` (default `scratch_helper.db` next to `server.js`), and
+  `SCRATCH_PREFS_PATH` (default `preferences.json` next to `server.js`) are also
   env-configurable, mainly for the Docker test setup (bind `0.0.0.0`, share a DB
-  volume with the SQLite test factory). `SCRATCH_NO_OPEN=1` skips the desktop
-  browser launch (headless/CI/Docker). `initDB` sets `PRAGMA journal_mode=WAL`
-  + `busy_timeout=5000` so the test factory can read/write the same DB file
-  concurrently with the server.
+  **and preferences** volume with the SQLite test factory). `SCRATCH_NO_OPEN=1`
+  skips the desktop browser launch (headless/CI/Docker). `initDB` sets
+  `PRAGMA journal_mode=WAL` + `busy_timeout=5000` so the test factory can
+  read/write the same DB file concurrently with the server.
+- **Docker compose service is named `scratch-app`, NOT `app`.** The DNS hostname
+  the Playwright browser navigates to must not be `app`: the bare hostname `app`
+  matches Google's HSTS-preloaded `.app` gTLD (force-https, includeSubDomains),
+  so Chromium force-upgrades `http://app:8787` → `https://app:8787` and fails
+  with `net::ERR_SSL_PROTOCOL_ERROR` (the app is plain HTTP). A hyphenated name
+  avoids the preload match. Do NOT rename it back to `app` (also avoid `dev`,
+  `page`, `foo`, `google`, `play`, `youtube`, ...).
+- **`preferences.json` must be shared across the app and tests containers.** In
+  Docker, `SCRATCH_PREFS_PATH=/data/preferences.json` is set on BOTH the
+  `scratch-app` and `tests` services (the `dbdata` volume is mounted in both), so
+  a spec's `fs.unlinkSync(prefsPath())` resets the file the app actually reads.
+  Without this, the app reads its own unmounted `/app/preferences.json`, the
+  unlink is a no-op, and `initial`/`gender`/`splashLogo` fail in CI (they pass
+  locally because there the repo-root file is the app's file).
 
 ## Functional tests (Playwright)
 - Playwright is a **dev-only** dependency (`@playwright/test` 1.61.1 in
@@ -239,7 +254,8 @@ scripts/test.sh / test.bat      no-Docker local test run
 - The **SQLite factory** (`tests/support/sqliteFactory.js`) opens the same DB
   file via `node:sqlite` (WAL + busy_timeout) and can clear/reset/createNew and
   seed chats/messages. In Docker, `SCRATCH_DB_PATH` points both containers at a
-  shared volume. Cross-container SQLite over a shared volume is fine for the
+  shared volume; `SCRATCH_PREFS_PATH` does the same for `preferences.json` (see
+  the gotchas above). Cross-container SQLite over a shared volume is fine for the
   factory's seed/clear workload; avoid heavy concurrent writes.
 - Page objects derive from `tests/pages/BasePage.js` (`loc(selector, options)`
   forwards Playwright filter options like `hasText`/`has` — dropping the 2nd
@@ -255,7 +271,7 @@ scripts/test.sh / test.bat      no-Docker local test run
 - CI runs **two jobs**: `mock-tests` (always) and `real-api-tests` (gated on
   `OLLAMA_API_KEY`). Each is its own job on its own runner with its own
   `COMPOSE_PROJECT_NAME` (`scratch-mock` / `scratch-real`) so the
-  `dbdata`/`nm` volumes and `app`/`tests` containers never collide. There is
+  `dbdata`/`nm` volumes and `scratch-app`/`tests` containers never collide. There is
   **no internal sharding** (no `--shard` matrix) — the `@mock` suite is small,
   and sharding would multiply the per-shard Docker build + `npm install`
   overhead for ~0s of savings and leave an empty green shard; re-enable a

@@ -11,13 +11,17 @@
 
 const { test, expect } = require('@playwright/test');
 const fs = require('fs');
-const path = require('path');
 const { ChatPage } = require('../pages/ChatPage');
 const { PreferencesModalPage } = require('../pages/PreferencesModalPage');
+const { prefsPath } = require('../support/env');
 
-// preferences.json as the app sees it (server.js: path.join(__dirname,
-// 'preferences.json'); the app runs from the repo root, same as the test cwd).
-const PREFS_PATH = path.join(__dirname, '..', '..', 'preferences.json');
+// preferences.json as the app sees it: prefsPath() (tests/support/env.js). The
+// app and this spec resolve the SAME path — locally a throwaway file under
+// test-data/, in Docker /data/preferences.json on the shared dbdata volume —
+// so unlinking it here resets the app's actual prefs. Without that shared path
+// this unlink is a no-op against the app and the "default persists" test fails
+// (the app still holds a prior spec's gender).
+const PREFS_PATH = prefsPath();
 
 test.describe('Gender preference round-trip @mock', () => {
   test('a selected gender persists across reload @mock', async ({ page }) => {

@@ -183,9 +183,15 @@ it produces is cached in the `nm` volume across runs.
 
 The two containers share a `dbdata` volume so the SQLite test factory (running in
 the tests container) can read/write the same DB the app (in the app container)
-uses. The HTML report and JUnit XML are written into your repo directory
-(`playwright-report/`, `test-results/`) via the mount, so you can open the report
-locally afterward.
+uses — both point `SCRATCH_DB_PATH` at `/data/scratch_helper.db` on that volume.
+The same volume carries `preferences.json`: `SCRATCH_PREFS_PATH=/data/preferences.json`
+in both containers, so an `fs.unlinkSync` in a spec (initial/gender/splashLogo)
+resets the file the app actually reads. Without that shared prefs path the app
+would read its own unmounted `/app/preferences.json` and the shared-state tests
+would fail in Docker (they pass locally only because there the repo-root file is
+the app's file). The HTML report and JUnit XML are written into your repo
+directory (`playwright-report/`, `test-results/`) via the mount, so you can open
+the report locally afterward.
 
 ---
 
@@ -425,7 +431,10 @@ scenarios.
 
 The DB path comes from `SCRATCH_DB_PATH` (default
 `test-data/scratch_helper.test.db`). In Docker, both containers point
-`SCRATCH_DB_PATH` at the shared `dbdata` volume.
+`SCRATCH_DB_PATH` at the shared `dbdata` volume. `preferences.json` follows the
+same pattern via `SCRATCH_PREFS_PATH` (see `tests/support/env.js` `prefsPath()`,
+default `test-data/preferences.json`); the specs that reset first-run state
+(`initial`, `gender`, `splashLogo`) `fs.unlinkSync(prefsPath())`.
 
 ### API
 
@@ -840,6 +849,20 @@ await page.route('**/api/chat', (route) =>
 - **`unable to open database file`** — only happens if you override
   `SCRATCH_DB_PATH` to a path whose parent doesn't exist. The server and factory
   both create the parent dir now, so this should not recur.
+- **`initial` / `gender` / `splashLogo` fail in CI but pass locally (mock)** —
+  `preferences.json` must be the SAME file in the app and tests containers, or a
+  spec's `fs.unlinkSync(prefsPath())` deletes a file the app never reads and the
+  app keeps a prior spec's prefs. Locally the repo-root file is the app's file,
+  so it works; in Docker the app's `/app/preferences.json` is unmounted, so the
+  unlink is a no-op and the first-run modal never opens. Fix: keep
+  `SCRATCH_PREFS_PATH=/data/preferences.json` set on BOTH the `scratch-app` and
+  `tests` services in `docker-compose.yml` (the `dbdata` volume is mounted in
+  both). Do not drop it from either container.
+- **Tests pass locally but fail in CI (mock, other causes)** — the `@mock` suite
+  is deterministic, so a CI-only failure usually means a selector/timing change
+  or a Docker-only shared-state issue (see the previous bullet). Download the
+  `playwright-report-*` artifact and open it; check the trace
+  (`trace: 'retain-on-failure'` is on).
 - **Every `chat.open()` takes ≥1.5 s** — that's the loading splash, not a hang.
   The app shows a `#splash` overlay for at least 1.5 s (longer while the boot
   fetches run) on every open/refresh, and `ChatPage.open()` awaits it clearing.
@@ -847,10 +870,6 @@ await page.route('**/api/chat', (route) =>
   If a test times out at 10 s right after `open()`, the splash never cleared —
   which means one of the boot fetches (`/api/health`, `/api/preferences`,
   `/api/chats`) hung; check the server log, not the splash code.
-- **Tests pass locally but fail in CI (mock)** — the `@mock` suite is
-  deterministic, so a CI-only failure usually means a selector or timing change.
-  Download the `playwright-report-*` artifact and open it; check the trace
-  (`trace: 'retain-on-failure'` is on).
 - **`dorny/test-reporter` on a fork PR** — `checks: write` is not available for
   fork PRs. The reporter step has `continue-on-error: true` and a
   `hashFiles('test-results/junit.xml')` guard, so this no longer fails the job;
@@ -891,7 +910,7 @@ tests/
     PreferencesModalPage.js     preferences modal
     ChatHistoryDrawerPage.js    chat history drawer
   support/
-    env.js                      baseUrl() / dbPath()
+    env.js                      baseUrl() / dbPath() / prefsPath()
     globalSetup.js              seeds the shared DB once before all tests
     mockOllama.js               mockChatAnswer / mockChatSequence / mockChatEmpty
     sqliteFactory.js            clear / reset / createNew / insert* / list / get
@@ -917,7 +936,8 @@ scripts/test.sh / test.bat      no-Docker local run
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `BASE_URL` | `http://127.0.0.1:8787` | App URL Playwright targets (Docker: `http://scratch-app:8787`) |
-| `SCRATCH_DB_PATH` | `test-data/scratch_helper.test.db` | DB the app + factory share |
+| `SCRATCH_DB_PATH` | `test-data/scratch_helper.test.db` | DB the app + factory share (Docker: `/data/scratch_helper.db` on the shared `dbdata` volume) |
+| `SCRATCH_PREFS_PATH` | `test-data/preferences.json` | `preferences.json` the app reads/writes — must match the path specs `unlink` to reset first-run state (Docker: `/data/preferences.json` on the shared `dbdata` volume). Locally a throwaway under `test-data/` so `npm test` never clobbers the user's real `preferences.json`. |
 | `OLLAMA_BASE` | `https://ollama.com` | Ollama backend |
 | `OLLAMA_API_KEY` | `mock-dummy-key` | Cloud API key (real for `@real`) |
 | `SCRATCH_MODEL` | `glm-5.2` | Model name (no `:cloud` in API mode) |

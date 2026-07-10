@@ -16,13 +16,15 @@
 
 const { test, expect } = require('@playwright/test');
 const fs = require('fs');
-const path = require('path');
 const { ChatPage } = require('../pages/ChatPage');
 const { PreferencesModalPage } = require('../pages/PreferencesModalPage');
+const { prefsPath } = require('../support/env');
 
-// preferences.json as the app sees it (server.js: path.join(__dirname,
-// 'preferences.json'); the app runs from the repo root, same as the test cwd).
-const PREFS_PATH = path.join(__dirname, '..', '..', 'preferences.json');
+// preferences.json as the app sees it: prefsPath() (tests/support/env.js). The
+// app and this spec resolve the SAME path — locally a throwaway file under
+// test-data/, in Docker /data/preferences.json on the shared dbdata volume — so
+// deleting it here resets the app's actual prefs.
+const PREFS_PATH = prefsPath();
 
 // POST preferences with a given language (age is required by the server), then
 // fetch the served index.html and return the splash logo src it was injected

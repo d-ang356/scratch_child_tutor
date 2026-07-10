@@ -16,26 +16,25 @@
 
 const { test, expect } = require('@playwright/test');
 const fs = require('fs');
-const path = require('path');
 const { ChatPage } = require('../pages/ChatPage');
 const { PreferencesModalPage } = require('../pages/PreferencesModalPage');
 const { BlocksPanePage } = require('../pages/BlocksPanePage');
 const { mockChatAnswer } = require('../support/mockOllama');
+const { prefsPath } = require('../support/env');
 
-// preferences.json as the app sees it: server.js uses path.join(__dirname,
-// 'preferences.json'), and the app runs from the repo root. Locally the test
-// cwd is the repo root too, so this is the same file. In Docker the app's
-// preferences.json lives in the app container (/app), which is NOT mounted into
-// the tests container — but .dockerignore excludes it, so it is already absent
-// there and this unlink is a harmless no-op.
-const PREFS_PATH = path.join(__dirname, '..', '..', 'preferences.json');
+// preferences.json as the app sees it: prefsPath() (tests/support/env.js). The
+// app and this spec resolve the SAME path: locally a throwaway file under
+// test-data/ (so `npm test` never clobbers the user's real preferences.json),
+// in Docker /data/preferences.json on the shared dbdata volume. server.js
+// readPrefs() reads the file fresh on each /api/preferences GET (no caching), so
+// unlinking it here forces the next chat.open() page load to show the first-run
+// prefs modal. This is the one spec that genuinely tests first-run; all other
+// specs use ensureDismissed().
+const PREFS_PATH = prefsPath();
 
 test.beforeEach(async () => {
   // Guarantee a clean first-run state (no preferences.json) regardless of run
-  // order or a stale file from a prior local run. server.js readPrefs() reads
-  // the file fresh on each /api/preferences GET (no caching), so deleting it
-  // makes the next chat.open() page load force the prefs modal. This is the one
-  // spec that genuinely tests first-run; all other specs use ensureDismissed().
+  // order or a stale file from a prior local run.
   try { fs.unlinkSync(PREFS_PATH); } catch (e) { /* already absent — fine */ }
 });
 

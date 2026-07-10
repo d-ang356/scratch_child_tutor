@@ -85,7 +85,12 @@ function pickModule(urlObj) {
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const IMG_DIR = path.join(__dirname, 'img');
 const SYSTEM_PROMPT_PATH = path.join(__dirname, 'scratchblocks-prompts', 'system.md');
-const PREFS_PATH = path.join(__dirname, 'preferences.json');
+// SCRATCH_PREFS_PATH lets tests point the app at a preferences.json on a shared
+// Docker volume (same idea as SCRATCH_DB_PATH): the app container and the tests
+// container must see the SAME file, or the tests' fs.unlinkSync deletes a file the
+// app never reads and the shared-state tests (initial.spec, gender.spec) break.
+// Defaults to the local file next to server.js.
+const PREFS_PATH = process.env.SCRATCH_PREFS_PATH || path.join(__dirname, 'preferences.json');
 // SCRATCH_DB_PATH lets tests point the app at an isolated DB (and share it with
 // the SQLite test factory via a Docker volume). Defaults to the local file.
 const DB_PATH = process.env.SCRATCH_DB_PATH || path.join(__dirname, 'scratch_helper.db');
@@ -118,6 +123,10 @@ function readPrefs() {
   catch (e) { return null; }
 }
 function writePrefs(prefs) {
+  // SCRATCH_PREFS_PATH may point into a dir that doesn't exist yet (e.g. a
+  // throwaway test-data/ path before the DB init creates it, or a fresh Docker
+  // /data mount). Ensure the parent dir exists so the write can't fail on that.
+  fs.mkdirSync(path.dirname(PREFS_PATH), { recursive: true });
   fs.writeFileSync(PREFS_PATH, JSON.stringify(prefs, null, 2) + '\n', 'utf8');
 }
 
