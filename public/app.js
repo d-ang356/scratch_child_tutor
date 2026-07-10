@@ -163,13 +163,16 @@ function showStatus(key, ...args) {
   statusText.textContent = t(key, ...args) || "";
 }
 
-function applyI18n(lang) {
+function applyI18n(lang, { syncSplash = true } = {}) {
   LANG = lang === "bg" ? "bg" : "en";
   document.documentElement.lang = LANG;
-  // Keep the loading splash logo in sync with the app language. Called at boot
-  // (en default) and again once prefs load, so the correct logo is shown before
-  // the splash fades out.
-  if (splashLogo) splashLogo.src = LANG === "bg" ? "/img/logo_bg.png" : "/img/logo_en.png";
+  // Keep the loading splash logo in sync with the app language. Skipped at boot
+  // (the applyI18n("en", { syncSplash: false }) call below): the server already
+  // injected the saved language's logo into index.html, so setting the English
+  // default here would flash English before loadPreferences() re-syncs the saved
+  // language. loadPreferences() calls this with the saved lang (syncSplash on),
+  // which sets the SAME logo the server already injected — no flash.
+  if (splashLogo && syncSplash) splashLogo.src = LANG === "bg" ? "/img/logo_bg.png" : "/img/logo_en.png";
   document.querySelectorAll("[data-i18n]").forEach((el) => {
     const key = el.getAttribute("data-i18n");
     const v = STRINGS[LANG][key];
@@ -950,7 +953,12 @@ function hideSplash() {
   setTimeout(done, 600);
 }
 
-applyI18n("en");
+// Seed the English UI strings before prefs load, but do NOT touch the splash
+// logo: the server already injected the saved language's logo into index.html,
+// and overwriting it with the English default here would flash English until
+// loadPreferences() re-syncs. loadPreferences() calls applyI18n(prefs.lang)
+// with syncSplash on, which sets the same logo the server already injected.
+applyI18n("en", { syncSplash: false });
 const bootReady = Promise.allSettled([checkHealth(), loadPreferences(), refreshChatList()]);
 Promise.all([bootReady, new Promise((r) => setTimeout(r, SPLASH_MIN_MS))])
   .then(hideSplash)

@@ -15,9 +15,14 @@ right with scratchblocks.
     `index.html` is NOT streamed verbatim: the server reads `preferences.json`
     and rewrites the `#splashLogo` src to the saved language's logo
     (`logo_bg.png` / `logo_en.png`) before sending, so the loading splash shows
-    the right logo on the very first paint (no English-logo flash on a refresh
-    when the saved language is Bulgarian). `app.js` `applyI18n` still syncs it
-    after boot as a backstop. No prefs → English (the first-run default).
+    the right logo on the very first paint. `app.js` boot calls
+    `applyI18n("en", { syncSplash: false })` — it seeds the English UI strings
+    but deliberately does NOT touch `#splashLogo` (the server already set the
+    right one); only `loadPreferences()` later calls `applyI18n(prefs.lang)` with
+    `syncSplash` on, which sets the SAME logo the server injected. If the boot
+    call synced the splash, it would set the English default before prefs load →
+    a brief English flash on a Bulgarian refresh (BG → EN → BG). Do NOT "fix"
+    this by making the boot `applyI18n` sync the splash. No prefs → English.
   - Proxies `/api/chat` to Ollama at `${OLLAMA_BASE}/v1/chat/completions`, picking
     `http` vs `https` from the URL. Two backends: the local Ollama app
     (default `http://localhost:11434`, no key) or the Ollama Cloud API
