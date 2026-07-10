@@ -73,6 +73,16 @@ inside the official Playwright image, so nothing is downloaded.)
 > If you skip this and run `scripts/test.sh`, it will tell you:
 > `Playwright is not installed. Run this once:  npm install`
 
+> **`package-lock.json` is gitignored (local-only).** `npm install` generates a
+> lock on your machine, but it is deliberately **not committed**. The app is
+> zero-dependency (end users never run `npm install`), the only dev dep
+> (`@playwright/test`) is pinned exactly in `package.json`, and CI/Docker install
+> with `--no-package-lock` and regenerate the tree anyway. A committed lock would
+> also carry macOS-only `fsevents` entries that clash with the Linux CI image.
+> Nothing here uses `npm ci` (which would require a lock) — everything uses
+> `npm install`. If you ever add a **runtime** dependency the app imports at
+> startup, revisit this and start committing the lock.
+
 ---
 
 ## 4. Running locally — no Docker
@@ -165,6 +175,11 @@ docker compose up --abort-on-container-exit --exit-code-from tests --build
 - `--abort-on-container-exit` stops the app when the tests finish.
 - `--exit-code-from tests` makes the command exit with the tests' exit code
   (non-zero if any test fails).
+
+The `tests` container installs `@playwright/test` with
+`npm install --no-audit --no-fund --no-package-lock` — it regenerates the dep
+tree rather than using a committed lock (see the note in §3). The `node_modules`
+it produces is cached in the `nm` volume across runs.
 
 The two containers share a `dbdata` volume so the SQLite test factory (running in
 the tests container) can read/write the same DB the app (in the app container)
@@ -739,6 +754,10 @@ await page.route('**/api/chat', (route) =>
   Use `mockChatAnswer(page, { hold: true })`, assert thinking, then `release()`
   (see §9 and the step-by-step in §10). Don't reach for a `setTimeout` sleep —
   the hold gate is deterministic.
+- **`npm ci` fails with "no package-lock.json"** — expected. `package-lock.json`
+  is gitignored by design (the app is zero-dependency and `@playwright/test` is
+  pinned exactly in `package.json`; CI regenerates with `--no-package-lock`).
+  Use `npm install`, not `npm ci`.
 
 ---
 

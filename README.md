@@ -105,8 +105,6 @@ address it used.
 > step-by-step "write a new test" walkthrough.
 
 Functional tests use **Playwright** (JavaScript). Playwright is a **dev-only**
-
-Functional tests use **Playwright** (JavaScript). Playwright is a **dev-only**
 dependency — the app itself stays zero-dependency, and normal users never need
 `npm install`. Only developers/CI install it.
 
@@ -114,6 +112,12 @@ One-time setup for local no-Docker runs:
 ```
 npm install
 ```
+
+> `npm install` generates a `package-lock.json` locally, but it is
+> **gitignored and not committed** — the app is zero-dependency, the only dev
+> dep is pinned exactly in `package.json`, and CI/Docker regenerate the tree
+> with `--no-package-lock`. Use `npm install` (not `npm ci`). See
+> [`TESTING.md`](TESTING.md) for the full rationale.
 
 ### No-Docker local run
 ```

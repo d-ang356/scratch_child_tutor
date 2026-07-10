@@ -120,6 +120,13 @@ scripts/test.sh / test.bat      no-Docker local test run
   - `scratch_helper.db*` (SQLite DB + WAL/journal)
   - `.claude/`
   - planning scratch files (`PLAN.md`, `TODO.md`, etc.)
+  - `package-lock.json` — local-only, deliberately NOT committed. The app is
+    zero-dependency (end users never `npm install`), `@playwright/test` is
+    pinned exactly in `package.json`, and CI/Docker install with
+    `--no-package-lock` and regenerate the tree anyway; a committed lock would
+    also carry macOS-only `fsevents` entries that clash with the Linux CI image.
+    Use `npm install`, never `npm ci` (which requires a lock). Revisit if a
+    runtime dependency is ever added.
 - Never commit local user data. After testing, reset state with:
   `rm -f preferences.json scratch_helper.db scratch_helper.db-*`
 
