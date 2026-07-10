@@ -1,11 +1,18 @@
 {
   "name": "scratch_helper",
   "version": "1.0.0",
-  "description": "A small, friendly local web helper that teaches **Scratch 3.0** (the offline desktop editor) to a young child. You ask how to make something — in **English** or **Български** — and a tutor (the `glm-5.2:cloud` model via your local Ollama app) explains the steps on the left and draws the actual Scratch blocks on the right.",
-  "main": "_dump.js",
+  "description": "A small, friendly local web helper that teaches Scratch 3.0 (the offline desktop editor) to a young child. You ask how to make something — in English or Български — and a tutor model served by Ollama explains the steps on the left and draws the actual Scratch blocks on the right.",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+    "start": "node --no-warnings server.js",
+    "test": "playwright test",
+    "test:mock": "playwright test --grep @mock",
+    "test:real": "playwright test --grep @real",
+    "test:docker": "docker compose up --abort-on-container-exit --exit-code-from tests --build",
+    "playwright:install": "playwright install --with-deps"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1"
   },
   "keywords": [],
   "author": "",

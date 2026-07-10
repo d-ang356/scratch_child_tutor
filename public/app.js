@@ -22,6 +22,9 @@ const chatDrawer = $("chatDrawer");
 const chatList = $("chatList");
 const drawerClose = $("drawerClose");
 const blockTabsEl = $("blockTabs");
+const tabStripEl = $("tabStrip");
+const tabPrev = $("tabPrev");
+const tabNext = $("tabNext");
 const chatBackdrop = $("chatBackdrop");
 const scrollToMsgBtn = $("scrollToMsgBtn");
 const prefsModal = $("prefsModal");
@@ -31,6 +34,8 @@ const prefsCancel = $("prefsCancel");
 const pAge = $("pAge");
 const pName = $("pName");
 const pAgeErr = $("pAgeErr");
+const splash = $("splash");
+const splashLogo = $("splashLogo");
 
 /* ---------- i18n ---------- */
 const STRINGS = {
@@ -62,6 +67,11 @@ const STRINGS = {
     prefsLang: "App language",
     langEn: "English",
     langBg: "Български",
+    prefsGender: "Child's gender",
+    genderBoy: "Boy",
+    genderGirl: "Girl",
+    genderUnspecified: "Prefer not to say",
+    prefsGenderHint: "Used so the tutor's words match the child.",
     prefsAge: "Child's age (whole number, 1–17)",
     prefsAgeHint: "Used to match the tutor's words to the child.",
     prefsAgeErr: "Please enter a whole number from 1 to 17.",
@@ -112,6 +122,11 @@ const STRINGS = {
     prefsLang: "Език на приложението",
     langEn: "English",
     langBg: "Български",
+    prefsGender: "Пол на детето",
+    genderBoy: "Момче",
+    genderGirl: "Момиче",
+    genderUnspecified: "Предпочитам да не казвам",
+    prefsGenderHint: "Използва се, за да нагласим думите на учителя към детето.",
     prefsAge: "Възраст на детето (цяло число, 1–17)",
     prefsAgeHint: "Използва се, за да нагласим думите на учителя към детето.",
     prefsAgeErr: "Моля, въведи цяло число от 1 до 17.",
@@ -151,6 +166,10 @@ function showStatus(key, ...args) {
 function applyI18n(lang) {
   LANG = lang === "bg" ? "bg" : "en";
   document.documentElement.lang = LANG;
+  // Keep the loading splash logo in sync with the app language. Called at boot
+  // (en default) and again once prefs load, so the correct logo is shown before
+  // the splash fades out.
+  if (splashLogo) splashLogo.src = LANG === "bg" ? "/img/logo_bg.png" : "/img/logo_en.png";
   document.querySelectorAll("[data-i18n]").forEach((el) => {
     const key = el.getAttribute("data-i18n");
     const v = STRINGS[LANG][key];
@@ -350,14 +369,21 @@ function showBlocksError(msg) {
 
 /* ---------- Right-pane tabs (one per assistant answer) ---------- */
 function renderTabs() {
-  blockTabsEl.innerHTML = "";
+  tabStripEl.innerHTML = "";
   tabs.forEach((tab, i) => {
     const btn = document.createElement("button");
     btn.className = "tab" + (i === activeTab ? " active" : "");
     btn.textContent = tab.label;
+    btn.setAttribute("role", "tab");
+    btn.setAttribute("aria-selected", i === activeTab ? "true" : "false");
+    // Roving tabindex: only the active tab is in the tab order; arrow keys
+    // (handled on the strip) move between tabs — the WAI-ARIA tabs pattern.
+    btn.tabIndex = i === activeTab ? 0 : -1;
     btn.addEventListener("click", () => selectTab(i));
-    blockTabsEl.appendChild(btn);
+    tabStripEl.appendChild(btn);
   });
+  blockTabsEl.classList.toggle("empty", tabs.length === 0);
+  updateTabScrollState();
 }
 function selectTab(i) {
   if (i < 0 || i >= tabs.length) {
@@ -368,6 +394,7 @@ function selectTab(i) {
   renderTabs();
   renderBlocks(tabs[i].markup);
   scrollToMsgBtn.hidden = false;
+  scrollActiveTabIntoView();
 }
 function addTab(markup, bubble) {
   if (!markup || !markup.trim()) return;
@@ -375,10 +402,68 @@ function addTab(markup, bubble) {
   selectTab(tabs.length - 1);
 }
 function clearTabs() {
-  tabs = []; activeTab = -1; blockTabsEl.innerHTML = "";
+  tabs = []; activeTab = -1; tabStripEl.innerHTML = "";
   blocksHost.innerHTML = ""; blocksWarn.hidden = true; blocksEmpty.hidden = false;
   scrollToMsgBtn.hidden = true;
+  blockTabsEl.classList.add("empty");
+  updateTabScrollState();
 }
+
+// Tab-strip overflow UX: show chevron arrows + edge fades only when the tabs
+// overflow the strip, and disable an arrow at the respective edge. Called on
+// render, scroll, resize, and tab selection.
+function updateTabScrollState() {
+  const overflow = tabStripEl.scrollWidth > tabStripEl.clientWidth + 1;
+  blockTabsEl.classList.toggle("overflow", overflow);
+  if (!overflow) {
+    tabPrev.hidden = true; tabNext.hidden = true;
+    blockTabsEl.classList.remove("can-left", "can-right");
+    return;
+  }
+  tabPrev.hidden = false; tabNext.hidden = false;
+  const sl = tabStripEl.scrollLeft;
+  const canLeft = sl > 1;
+  const canRight = sl + tabStripEl.clientWidth < tabStripEl.scrollWidth - 1;
+  tabPrev.disabled = !canLeft;
+  tabNext.disabled = !canRight;
+  blockTabsEl.classList.toggle("can-left", canLeft);
+  blockTabsEl.classList.toggle("can-right", canRight);
+}
+
+// Scroll the active tab into view within the strip (only the strip scrolls —
+// no ancestor scrolling), so selecting a far tab brings it on-screen.
+function scrollActiveTabIntoView() {
+  const btn = tabStripEl.children[activeTab];
+  if (!btn) return;
+  const btnLeft = btn.getBoundingClientRect().left - tabStripEl.getBoundingClientRect().left + tabStripEl.scrollLeft;
+  const btnRight = btnLeft + btn.offsetWidth;
+  if (btnLeft < tabStripEl.scrollLeft) {
+    tabStripEl.scrollTo({ left: Math.max(0, btnLeft - 8), behavior: "smooth" });
+  } else if (btnRight > tabStripEl.scrollLeft + tabStripEl.clientWidth) {
+    tabStripEl.scrollTo({ left: btnRight - tabStripEl.clientWidth + 8, behavior: "smooth" });
+  }
+}
+
+tabPrev.addEventListener("click", () => tabStripEl.scrollBy({ left: -tabStripEl.clientWidth * 0.85, behavior: "smooth" }));
+tabNext.addEventListener("click", () => tabStripEl.scrollBy({ left: tabStripEl.clientWidth * 0.85, behavior: "smooth" }));
+tabStripEl.addEventListener("scroll", updateTabScrollState, { passive: true });
+window.addEventListener("resize", updateTabScrollState);
+
+// Keyboard navigation across the tab strip: ArrowLeft/Right step, Home/End jump
+// to the ends. Moves selection and focus (roving tabindex).
+tabStripEl.addEventListener("keydown", (e) => {
+  if (!tabs.length) return;
+  let i = activeTab;
+  if (e.key === "ArrowRight") i = Math.min(tabs.length - 1, i + 1);
+  else if (e.key === "ArrowLeft") i = Math.max(0, i - 1);
+  else if (e.key === "Home") i = 0;
+  else if (e.key === "End") i = tabs.length - 1;
+  else return;
+  e.preventDefault();
+  selectTab(i);
+  const btn = tabStripEl.children[i];
+  if (btn) btn.focus();
+});
 
 function scrollToMessage(bubble) {
   if (!bubble) return;
@@ -743,8 +828,9 @@ async function loadPreferences() {
 
 function openPrefs(forceFirst) {
   // Pre-fill from current prefs (or defaults).
-  const cur = prefs || { lang: "en", age: null, name: "" };
+  const cur = prefs || { lang: "en", age: null, name: "", gender: "unspecified" };
   prefsForm.querySelector(`input[name="pLang"][value="${cur.lang || "en"}"]`).checked = true;
+  prefsForm.querySelector(`input[name="pGender"][value="${cur.gender || "unspecified"}"]`).checked = true;
   pAge.value = cur.age != null ? cur.age : "";
   pName.value = cur.name || "";
   pAgeErr.hidden = true;
@@ -762,6 +848,7 @@ prefsForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   pAgeErr.hidden = true;
   const lang = prefsForm.querySelector('input[name="pLang"]:checked').value;
+  const gender = prefsForm.querySelector('input[name="pGender"]:checked').value;
   const ageRaw = pAge.value.trim();
   const age = Number(ageRaw);
   if (ageRaw === "" || !Number.isInteger(age) || age < 1 || age > 17) {
@@ -774,7 +861,7 @@ prefsForm.addEventListener("submit", async (e) => {
   const res = await fetch("/api/preferences", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ lang, age, name }),
+    body: JSON.stringify({ lang, age, name, gender }),
   });
   const data = await res.json();
   if (!res.ok || !data.prefs) {
@@ -844,10 +931,30 @@ examplesEl.addEventListener("click", (e) => {
 newChatBtn.addEventListener("click", startNewChat);
 
 /* ---------- Boot ---------- */
+// Loading splash: fade in immediately, then hold for at least SPLASH_MIN_MS
+// AND until the boot fetches (health / preferences / chat list) have settled —
+// whichever is longer. This masks the initial server round-trips (incl. the
+// first-run prefs modal opening) behind a friendly logo. Fades out, then is
+// removed from layout (.hidden) so tests/UI can interact.
+const SPLASH_MIN_MS = 1500;
+function hideSplash() {
+  if (!splash || splash.classList.contains("hidden") || splash.classList.contains("fade-out")) return;
+  splash.classList.add("fade-out");
+  const done = () => { if (splash) splash.classList.add("hidden"); };
+  splash.addEventListener("animationend", function onEnd(e) {
+    if (e.animationName !== "splashFadeOut") return;
+    splash.removeEventListener("animationend", onEnd);
+    done();
+  });
+  // Fallback in case animationend never fires.
+  setTimeout(done, 600);
+}
+
 applyI18n("en");
-checkHealth();
-loadPreferences();
-refreshChatList();
+const bootReady = Promise.allSettled([checkHealth(), loadPreferences(), refreshChatList()]);
+Promise.all([bootReady, new Promise((r) => setTimeout(r, SPLASH_MIN_MS))])
+  .then(hideSplash)
+  .catch(hideSplash);
 
 /* Refresh = new chat. Also guard against bfcache restoring a stale stream. */
 window.addEventListener("pageshow", (e) => { if (e.persisted) location.reload(); });

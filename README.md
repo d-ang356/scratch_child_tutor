@@ -1,5 +1,9 @@
 # Scratch Helper 🐱
 
+<p align="center">
+  <img src="img/logo_en.png" alt="Scratch Helper logo" width="220" />
+</p>
+
 A small, friendly local web helper that teaches **Scratch 3.0** (the offline
 desktop editor) to a young child. You ask how to make something — in **English**
 or **Български** — and a tutor model (any model served by **Ollama** — the
@@ -98,6 +102,98 @@ A browser opens at `http://127.0.0.1:8787`.
 If port 8787 is busy the server automatically tries 8788–8790 and prints the
 address it used.
 
+## Testing
+
+> **Full guide:** see [`TESTING.md`](TESTING.md) for setup, local + Docker +
+> CI runs, the page objects, the SQLite factory, the Ollama mock helpers, and a
+> step-by-step "write a new test" walkthrough.
+
+Functional tests use **Playwright** (JavaScript). Playwright is a **dev-only**
+dependency — the app itself stays zero-dependency, and normal users never need
+`npm install`. Only developers/CI install it.
+
+One-time setup for local no-Docker runs:
+```
+npm install
+```
+
+> `npm install` generates a `package-lock.json` locally, but it is
+> **gitignored and not committed** — the app is zero-dependency, the only dev
+> dep is pinned exactly in `package.json`, and CI/Docker regenerate the tree
+> with `--no-package-lock`. Use `npm install` (not `npm ci`). See
+> [`TESTING.md`](TESTING.md) for the full rationale.
+
+### No-Docker local run
+```
+scripts/test.sh          # Linux / macOS
+scripts\test.bat         # Windows
+# or just:  npm test
+```
+Playwright's `webServer` (see `playwright.config.js`) starts the app itself on
+`http://127.0.0.1:8787`, so you don't run `npm start` separately. The mocked
+suite (`@mock`) intercepts `/api/chat` at the browser boundary, so **no real
+Ollama call is made** and no API key is needed. Run only the mock suite:
+```
+npm run test:mock
+```
+The real-API suite (`@real`) exercises the full server→Ollama path and needs a
+real `OLLAMA_API_KEY` (and `SCRATCH_MODEL`) in your environment or `.env`:
+```
+npm run test:real
+```
+
+### Docker run (same as CI)
+```
+npm run test:docker
+```
+This brings up two containers via `docker-compose.yml`: the app (built from
+`Dockerfile`) and the official Playwright container (`mcr.microsoft.com/playwright:v1.61.1`).
+To run the real-API suite in Docker:
+```
+OLLAMA_API_KEY=<key> SCRATCH_MODEL=gpt-oss:20b PLAYWRIGHT_ARGS="--grep @real" npm run test:docker
+```
+
+### CI (GitHub Actions)
+`.github/workflows/playwright.yml` runs on every PR and push to `main`:
+- **Mock functional tests** — always. Deterministic, no secret needed.
+- **Real Ollama API tests** — only when the `OLLAMA_API_KEY` repo secret is set.
+  `tests/real/safety.spec.js` exercises the safety gate: an off-topic question
+  gets a refusal and no blocks.
+
+Each run uploads the **Playwright HTML report** as a downloadable artifact and
+posts a **pass/fail summary** to the workflow run page (via JUnit +
+`dorny/test-reporter`).
+
+### Test layout
+```
+playwright.config.js          webServer, reporters, projects (workers=1 — serial)
+tests/
+  pages/                      page objects (Base, Chat, BlocksPane, Preferences, ChatHistory)
+  support/                    mockOllama (route interception), sqliteFactory, env, globalSetup (seeds DB once)
+  utils/testConstants.js      shared seed chats + follow-up texts + 20-tab builder + off-topic prompt
+  specs/initial.spec.js       @mock initial smoke test (first-run modal)
+  specs/newChatAndDeleteChat.spec.js  @mock new-chat + delete-chat
+  specs/gender.spec.js        @mock gender preference round-trip
+  specs/followupBlocks.spec.js @mock follow-up -> 2nd block tab + ↖ jump-to-message; 20-tab arrow-scroll
+  specs/splashLogo.spec.js    @mock splash logo matches saved language (no EN flash on BG refresh)
+  real/safety.spec.js         @real safety-gate test (off-topic -> refusal)
+Dockerfile                    app image (zero-dep)
+docker-compose.yml            app + Playwright containers (shared DB volume)
+.github/workflows/playwright.yml
+scripts/test.sh / test.bat    no-Docker local run
+```
+
+Tests run **serially** (`workers: 1`): the suite shares one app instance, one
+SQLite DB, and one `preferences.json`, so it is not parallel-safe at `workers>1`
+(the first-run test deletes `preferences.json`; another test saving prefs
+concurrently can recreate it before the first-run page reads it). See
+[`TESTING.md`](TESTING.md) for the full rationale and how to lift that later.
+
+The **SQLite factory** (`tests/support/sqliteFactory.js`) opens the same DB file
+the app uses (`SCRATCH_DB_PATH`, shared via a Docker volume in CI) and can
+`clear()` / `reset()` / `createNew()` and `insertChat` / `insertMessage` /
+`insertConversation` for seeding scenarios.
+
 ## How to use
 
 - Type a question like *“How do I make the cat walk and say hello?”* or
@@ -138,9 +234,9 @@ public/
 scratchblocks-prompts/
   system.md                the tutor system prompt (bilingual, with cheat-sheets)
 start.bat / start.sh       launchers
-img/                       screenshots for the README
+img/                       screenshots + logo_en / logo_bg (loading splash) for the README
 scratch_helper.db          local SQLite chat history (created on first run)
-preferences.json           child's language/age/name (created when you save prefs)
+preferences.json           child's language/age/name/gender (created when you save prefs)
 ```
 
 The server exposes a small JSON API: `/api/chat` (streaming tutor answer),
@@ -207,12 +303,20 @@ conversation is sent to Ollama Cloud for inference.
 
 ## Assets
 
-- **Logo / favicon (`img/logo.png`)**: generated with **Google Gemini** using the
-  free tier (as of the March 2026 Gemini terms). Google does not claim ownership
-  over generated content, and you may use generated content commercially in
-  accordance with applicable law. Google may generate the same or similar content
-  for others, may use free-tier prompts/responses to improve its products, and
-  embeds an invisible SynthID watermark in generated images. See the
+- **Logos (`img/logo_en.png`, `img/logo_bg.png`)**: shown by the **loading splash**
+  — when the app opens or refreshes, a logo fades in for at least 1.5 s (longer
+  while the app's boot fetches run) and then fades out. `logo_en.png` is shown
+  when the app language is English, `logo_bg.png` when it is Български. The
+  server injects the correct logo into the page before sending it, so the splash
+  shows the right logo from the very first paint (no brief flash of the English
+  logo when your saved language is Bulgarian). Also at the top of this README.
+- **Favicon (`img/logo.png`) + splash logos (`img/logo_en.png`, `img/logo_bg.png`)**:
+  generated with **Google Gemini** using the free tier (as of the March 2026
+  Gemini terms). Google does not claim ownership over generated content, and you
+  may use generated content commercially in accordance with applicable law.
+  Google may generate the same or similar content for others, may use free-tier
+  prompts/responses to improve its products, and embeds an invisible SynthID
+  watermark in generated images. See the
   [Gemini API Additional Terms of Service](https://ai.google.dev/gemini-api/terms).
 
 ## License

@@ -370,3 +370,15 @@ scratch_helper.db-journal
 scratch_helper.db-wal
 scratch_helper.db-shm
 
+# Playwright test artifacts (local no-docker runs)
+test-data/
+playwright-report/
+test-results/
+
+# package-lock.json: the app is zero-dependency (end users never run npm
+# install), the only dep (@playwright/test) is pinned exactly in package.json,
+# and CI/Docker install with --no-package-lock and regenerate the tree anyway.
+# A committed lock also carries platform-specific entries (fsevents) that clash
+# with the Linux CI image. So it's local-only.
+package-lock.json
+

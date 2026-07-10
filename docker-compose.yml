@@ -1,0 +1,88 @@
+# Two-container test setup:
+#   scratch-app — scratch_helper built from ./Dockerfile (zero-dep Node app).
+#   tests       — official Playwright image (mcr.microsoft.com/playwright:v1.61.1)
+#                with the repo mounted at /work; runs `npx playwright test`.
+#
+# The two containers share the `dbdata` volume so the SQLite test factory (in the
+# tests container) can read/write the same DB the app (in the scratch-app
+# container) uses. Set OLLAMA_API_KEY / SCRATCH_MODEL / PLAYWRIGHT_ARGS to switch
+# between the mocked suite (@mock, default) and the real-API suite (@real).
+#
+# The app service is named `scratch-app`, NOT `app`: the Docker DNS hostname is
+# what the Playwright browser (Chromium) navigates to. The bare hostname `app`
+# matches Google's HSTS-preloaded `.app` gTLD (force-https, includeSubDomains),
+# so Chromium force-upgrades http://app:8787 -> https://app:8787, which then fails
+# with net::ERR_SSL_PROTOCOL_ERROR because the app speaks plain HTTP. A
+# hyphenated name like `scratch-app` is not a subdomain of any preloaded TLD
+# (also avoid `dev`, `page`, `foo`, `google`, `play`, `youtube`, ...). Do NOT
+# rename it back to `app` — every test will fail with an SSL protocol error.
+#
+# Run:   docker compose up --abort-on-container-exit --exit-code-from tests --build
+#        (or: npm run test:docker)
+
+services:
+  scratch-app:
+    build: .
+    environment:
+      OLLAMA_BASE: ${OLLAMA_BASE:-https://ollama.com}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-mock-dummy-key}
+      SCRATCH_MODEL: ${SCRATCH_MODEL:-glm-5.2}
+      SCRATCH_DB_PATH: /data/scratch_helper.db
+      # preferences.json on the shared /data volume (not the app container's own
+      # /app dir) so the tests container can delete/reset it and the app sees the
+      # change. Without this, initial.spec/gender.spec delete a file the app never
+      # reads and the shared-prefs tests break in Docker (they pass locally only
+      # because there the repo-root file IS the app's file).
+      SCRATCH_PREFS_PATH: /data/preferences.json
+      HOST: 0.0.0.0
+      PORT: 8787
+      SCRATCH_NO_OPEN: "1"
+    volumes:
+      - dbdata:/data
+    # Expose only within the compose network — the tests container reaches the
+    # app at http://scratch-app:8787 over the bridge. No need to publish to the
+    # host (avoids a bind conflict on shared self-hosted runners).
+    expose:
+      - "8787"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  tests:
+    image: mcr.microsoft.com/playwright:v1.61.1
+    depends_on:
+      scratch-app:
+        condition: service_healthy
+    environment:
+      BASE_URL: http://scratch-app:8787
+      SCRATCH_DB_PATH: /data/scratch_helper.db
+      # Same shared prefs path as the app container: the specs fs.unlinkSync this
+      # path to force/reset first-run, and it must be the file the app actually
+      # reads. /data is the shared dbdata volume, mounted here too.
+      SCRATCH_PREFS_PATH: /data/preferences.json
+      OLLAMA_BASE: ${OLLAMA_BASE:-https://ollama.com}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-mock-dummy-key}
+      SCRATCH_MODEL: ${SCRATCH_MODEL:-glm-5.2}
+      # The Playwright image ships browsers at /ms-playwright; tell the npm
+      # package to use them and skip its own browser download.
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      PLAYWRIGHT_ARGS: ${PLAYWRIGHT_ARGS:---grep @mock}
+    volumes:
+      - ./:/work
+      - dbdata:/data
+      # Cache node_modules across runs inside the container (Linux binaries).
+      - nm:/work/node_modules
+    working_dir: /work
+    # Install @playwright/test (the image has browsers but not the npm package),
+    # then run the tests. --no-package-lock avoids writing a Linux-platform lock
+    # file back into the host repo via the mount. Exit code propagates via
+    # --exit-code-from tests.
+    command: sh -c "npm install --no-audit --no-fund --no-package-lock && npx playwright test $PLAYWRIGHT_ARGS"
+
+volumes:
+  dbdata:
+  nm:
