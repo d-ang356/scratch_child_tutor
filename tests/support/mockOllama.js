@@ -69,6 +69,25 @@ async function mockChatAnswer(page, opts = {}) {
   return { release: () => {} };
 }
 
+// Intercept /api/chat and return a DIFFERENT canned answer on each successive
+// call: answers[0] on the first /api/chat, answers[1] on the second, and so on.
+// The last entry is reused for any extra calls. Use this for follow-up
+// scenarios where a second question must produce a second, distinct answer with
+// its own scratchblocks fence (so the right pane grows a second tab). No
+// reasoning delta and no hold — simple sequential content.
+async function mockChatSequence(page, answers) {
+  if (!Array.isArray(answers) || answers.length === 0) {
+    throw new Error('mockChatSequence: answers must be a non-empty array');
+  }
+  let i = 0;
+  await page.route('**/api/chat', (route) => {
+    const content = answers[Math.min(i, answers.length - 1)];
+    i += 1;
+    const body = sse({ choices: [{ delta: { content } }] }) + 'data: [DONE]\n\n';
+    fulfillSSE(route, body);
+  });
+}
+
 // Intercept /api/chat with NO content delta (only optional reasoning, then
 // [DONE]). The frontend's finalize() then shows the "no answer" message and
 // produces NO block tab — handy for mocked UI tests of the empty/no-answer path.
@@ -78,4 +97,4 @@ async function mockChatEmpty(page, opts = {}) {
   await page.route('**/api/chat', (route) => fulfillSSE(route, body));
 }
 
-module.exports = { mockChatAnswer, mockChatEmpty, SCRATCH_ANSWER };
+module.exports = { mockChatAnswer, mockChatSequence, mockChatEmpty, SCRATCH_ANSWER };

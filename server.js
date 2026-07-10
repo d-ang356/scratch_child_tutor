@@ -97,7 +97,8 @@ try {
 }
 
 /* ---------- Preferences (preferences.json) ----------
- * Fields: lang ('en'|'bg'), age (whole number 1-17, may be null), name (string, optional).
+ * Fields: lang ('en'|'bg'), age (whole number 1-17, may be null), name (string,
+ * optional), gender ('boy'|'girl'|'unspecified', defaults to 'unspecified').
  */
 function sanitizePrefs(obj) {
   if (!obj || typeof obj !== 'object') return null;
@@ -107,7 +108,8 @@ function sanitizePrefs(obj) {
   let name = typeof obj.name === 'string'
     ? obj.name.replace(/[\x00-\x1F\x7F]/g, '').trim().slice(0, 40)
     : '';
-  return { lang, age, name };
+  const gender = obj.gender === 'girl' ? 'girl' : obj.gender === 'boy' ? 'boy' : 'unspecified';
+  return { lang, age, name, gender };
 }
 function readPrefs() {
   try { return sanitizePrefs(JSON.parse(fs.readFileSync(PREFS_PATH, 'utf8'))); }
@@ -169,6 +171,17 @@ function buildSystemPrompt() {
   if (prefs.name) lines.push(`- The child's name is "${prefs.name}". Address them by name now and then (warmly, not every sentence).`);
   lines.push(`- The child is ${prefs.age} years old. Match your vocabulary and sentence length to that age. For ages 7-8, be extra simple and concrete.`);
   if (prefs.age <= 8) lines.push('- Because the child is 8 or younger, in your numbered steps also tell them WHERE in the Scratch palette to find each block (top / middle / bottom of its category), using the palette-order reference in this prompt.');
+  // Gendered language so the tutor's pronouns and grammatical forms match the
+  // child. Per-gender (one line) keeps the prompt short and unambiguous; the
+  // Bulgarian forms are spelled out explicitly because they involve adjective /
+  // participle agreement (e.g. прав/права, готов/готова), not just pronouns.
+  if (prefs.gender === 'boy') {
+    lines.push("- The child is a boy. Refer to him with he/him pronouns. When answering in Bulgarian, use masculine grammatical forms (той; готов, прав, направен; etc.).");
+  } else if (prefs.gender === 'girl') {
+    lines.push("- The child is a girl. Refer to her with she/her pronouns. When answering in Bulgarian, use feminine grammatical forms (тя; готова, права, направена; etc.).");
+  } else {
+    lines.push('- The child\'s gender is not specified. Use gender-neutral language: English they/them or "you"; in Bulgarian, address the child as "ти" or by name and avoid gendered pronouns and gender-marked adjectives/participles (той/тя, готов/готова).');
+  }
   lines.push('- Answer in the language the child asks in (English or Bulgarian), as always.');
   return SYSTEM_PROMPT + '\n' + lines.join('\n');
 }
@@ -223,6 +236,31 @@ function serveStatic(req, res) {
       return sendJSON(res, 404, { error: 'not found' });
     }
     const ext = path.extname(resolved).toLowerCase();
+    // index.html: inject the saved language's splash logo so the very first
+    // paint already shows the right one. The markup hardcodes logo_en.png, and
+    // app.js only swaps it in applyI18n() AFTER loadPreferences() resolves — so
+    // without this, a refresh with the saved language set to Bulgarian briefly
+    // flashes the English logo before it switches. Server-side injection removes
+    // that race entirely (the HTML arrives with the correct src). First run has
+    // no preferences.json -> readPrefs() is null -> English logo (the default,
+    // matching the first-run modal).
+    if (resolved === path.join(PUBLIC_DIR, 'index.html')) {
+      fs.readFile(resolved, 'utf8', (readErr, html) => {
+        if (readErr) return sendJSON(res, 500, { error: 'read error' });
+        const prefs = readPrefs();
+        const logo = prefs && prefs.lang === 'bg' ? '/img/logo_bg.png' : '/img/logo_en.png';
+        const out = html.replace(
+          /(<img id="splashLogo"[^>]*?) src="\/img\/logo_[a-z]+\.png"/,
+          `$1 src="${logo}"`
+        );
+        res.writeHead(200, {
+          'Content-Type': MIME['.html'],
+          'Cache-Control': 'no-store',
+        });
+        res.end(out);
+      });
+      return;
+    }
     res.writeHead(200, {
       'Content-Type': MIME[ext] || 'application/octet-stream',
       'Cache-Control': 'no-store',

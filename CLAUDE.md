@@ -12,6 +12,12 @@ right with scratchblocks.
 ## Architecture
 - `server.js` — zero-dependency Node HTTP server.
   - Serves `public/` static files (+ `/img/` from the repo-root `img/` dir).
+    `index.html` is NOT streamed verbatim: the server reads `preferences.json`
+    and rewrites the `#splashLogo` src to the saved language's logo
+    (`logo_bg.png` / `logo_en.png`) before sending, so the loading splash shows
+    the right logo on the very first paint (no English-logo flash on a refresh
+    when the saved language is Bulgarian). `app.js` `applyI18n` still syncs it
+    after boot as a backstop. No prefs → English (the first-run default).
   - Proxies `/api/chat` to Ollama at `${OLLAMA_BASE}/v1/chat/completions`, picking
     `http` vs `https` from the URL. Two backends: the local Ollama app
     (default `http://localhost:11434`, no key) or the Ollama Cloud API
@@ -28,7 +34,28 @@ right with scratchblocks.
 - `public/app.js` — streaming frontend with i18n, preferences modal, chat drawer,
   right-pane block sub-tabs (one tab per assistant answer that contains blocks),
   and a hover “↖” icon under each tab that scrolls to the matching chat message.
-- `public/index.html` + `styles.css` — two-pane dark Claude-style UI.
+  The tab strip (`#blockTabs` > `#tabStrip`) is a modern overflow scroller: the
+  native scrollbar is hidden, and contextual `‹`/`›` chevron arrows + edge
+  gradient fades appear **only when the tabs overflow** (`scrollWidth >
+  clientWidth`, JS toggles `.overflow`/`.can-left`/`.can-right`), arrows disable
+  at the ends, the active tab auto-scrolls into view, and ArrowLeft/Right/Home/
+  End move between tabs (WAI-ARIA roving tabindex). This handles 20+ follow-up
+  answers without an ugly scrollbar — no hard "dropdown at N" threshold; the
+  overflow detection itself is the threshold (a few tabs that fit stay a plain
+  row, EN or BG).
+  Also runs the **loading splash**: on every open/refresh a full-screen `#splash`
+  overlay fades in showing the language-matching logo (`/img/logo_en.png` or
+  `/img/logo_bg.png`). The correct src is injected server-side into `index.html`
+  (see `server.js` above) so the first paint is already right; `applyI18n`
+  re-syncs it after boot as a backstop. The splash is held for ≥1.5 s **and**
+  until the boot fetches (`checkHealth` + `loadPreferences` + `refreshChatList`)
+  settle — whichever is longer — then fades out and is removed from layout
+  (`.hidden`).
+- `public/index.html` + `styles.css` — two-pane dark Claude-style UI. The splash
+  overlay (`#splash`, z-index 9999) sits above the modal (z-index 50). The chat
+  history drawer already scrolls (`.drawer` is a flex column bounded by
+  `top`/`bottom`; `.drawer-list` is `overflow-y:auto`) with a slim themed
+  scrollbar; the block-tab strip hides its native scrollbar (see `app.js`).
 - `scratchblocks-prompts/system.md` — the full bilingual tutor system prompt.
   - It is prepended to every chat (plus a short per-child context from prefs).
   - Contains hard safety rules: only Scratch 3.0 + official Scratch extensions.
@@ -55,7 +82,7 @@ OLLAMA_BASE=https://ollama.com OLLAMA_API_KEY=<key> SCRATCH_MODEL=glm-5.2 node -
 2. **UTF-8 safety.** Always read request bodies with `Buffer.concat(chunks).toString('utf8')`;
    never `raw += chunk` — Cyrillic splits across chunks and corrupts Bulgarian input.
 3. **System prompt is server-side.** `server.js` prepends it; the browser cannot change it.
-   Per-child prefs (age/name) are injected into a fresh system prompt on every request.
+   Per-child prefs (age/name/gender) are injected into a fresh system prompt on every request.
 4. **Safety is two-layer.**
    - Server gate in `handleChat` (`CLASSIFIER_PROMPT`) short-circuits off-topic input
      with a canned refusal SSE message. The classifier sees **only the latest user
@@ -74,7 +101,11 @@ OLLAMA_BASE=https://ollama.com OLLAMA_API_KEY=<key> SCRATCH_MODEL=glm-5.2 node -
    after the stream completes; history is sent back as context on the next turn.
 7. **Right pane tabs.** Each assistant answer that contains a fenced `scratchblocks`
    block becomes a tab; multiple `---` scripts within one answer stack inside that tab.
-   A hover “↖” icon jumps to the matching instruction message in the chat.
+   A hover “↖” icon jumps to the matching instruction message in the chat. With many
+   follow-ups the tab strip becomes a contextual-arrow overflow scroller (hidden
+   native scrollbar, `‹`/`›` + edge fades on overflow, keyboard Arrow/Home/End) —
+   see `app.js` / `.block-tabs`. Do not "fix" overflow by wrapping tabs to a second
+   row or by adding a hard dropdown threshold; the overflow detection is the threshold.
 8. **Loaded chats scroll to the bottom of the last message** so the latest turn is
    always visible.
 9. **Backend/model is configurable; any Ollama model works.** `OLLAMA_BASE`,
@@ -105,11 +136,14 @@ start.bat / start.sh            Launchers
 playwright.config.js            Playwright config (webServer, reporters, projects)
 tests/
   pages/                        page objects (Base/Chat/BlocksPane/Preferences/ChatHistory)
-  support/                      mockOllama (route interception), sqliteFactory, env, globalSetup (seeds DB once)
-  utils/testConstants.js        shared seed chats (FULL/MEOW) + block markup
+  support/                      mockOllama (route interception: mockChatAnswer / mockChatSequence / mockChatEmpty), sqliteFactory, env, globalSetup (seeds DB once)
+  utils/testConstants.js        shared seed chats (FULL/MEOW) + follow-up answers/questions + 20-tab builder + OFFTOPIC_QUESTION
   specs/initial.spec.js         @mock initial smoke test (first-run modal; deletes preferences.json in beforeEach)
   specs/newChatAndDeleteChat.spec.js @mock new-chat + delete-chat (delete is self-contained)
-  real/safety.spec.js           @real safety-gate tests (to implement)
+  specs/gender.spec.js          @mock gender preference round-trip
+  specs/followupBlocks.spec.js  @mock follow-up -> 2nd block tab + ↖ jump-to-message (fresh + seeded chat); 20-tab arrow-scroll test
+  specs/splashLogo.spec.js      @mock served index.html splash logo matches saved language (no EN flash on BG refresh)
+  real/safety.spec.js           @real safety-gate test (off-topic -> refusal; gated on key)
 Dockerfile                      app image (zero-dep, node:22-slim)
 docker-compose.yml              app + official Playwright container (shared DB volume; `expose`, no host port)
 .github/workflows/playwright.yml CI: 2 jobs (mock always, real gated on OLLAMA_API_KEY via check-secret; isolated compose projects; workers=1 serial; concurrency cancels superseded runs; reporter guarded + continue-on-error)
@@ -133,6 +167,17 @@ scripts/test.sh / test.bat      no-Docker local test run
   `rm -f preferences.json scratch_helper.db scratch_helper.db-*`
 
 ## Common gotchas
+- **Loading splash covers the UI for ≥1.5 s on every open/refresh.** `#splash`
+  (z-index 9999) fades in immediately and is only removed (`display:none` via the
+  `.hidden` class) once `Promise.all([bootReady, 1.5s])` settles, where `bootReady`
+  is `Promise.allSettled([checkHealth(), loadPreferences(), refreshChatList()])`.
+  Because `checkHealth` short-circuits for the cloud API, `bootReady` is fast and
+  the 1.5 s minimum dominates — but in **local-app mode** a slow `/api/tags` probe
+  holds the splash longer (that is intended: it masks the real boot cost). The
+  splash sits above the first-run prefs modal, so the modal is only interactable
+  after the splash clears. **Tests must wait for it** — `ChatPage.open()` already
+  does (`expectSplashGone()` awaits `#splash` hidden); any spec that calls
+  `page.reload()` directly must call `chat.expectSplashGone()` afterward.
 - The default model (`glm-5.2:cloud`) is a **reasoning model**: it streams
   `delta.reasoning` before `delta.content`. The UI renders the "Thinking…"
   indicator **immediately on send** (before any delta) to mask the server-side
@@ -200,7 +245,11 @@ scripts/test.sh / test.bat      no-Docker local test run
   forwards Playwright filter options like `hasText`/`has` — dropping the 2nd
   arg silently breaks title filters, which is why `rowByTitle` filters by
   `hasText`). Add new screens as new page objects rather than driving selectors
-  inline in specs. Non-initial specs call `prefs.ensureDismissed()` right after
+  inline in specs. `ChatPage.open()` navigates **and** awaits the loading splash
+  (`expectSplashGone()` → `#splash` hidden, 10 s timeout) before returning, so
+  every spec starts with the UI interactable; any spec that calls `page.reload()`
+  directly must also call `chat.expectSplashGone()` after it (the splash re-shows
+  on reload). Non-initial specs call `prefs.ensureDismissed()` right after
   `chat.open()` so a missing `preferences.json` (fresh CI/Docker) doesn't block
   the test; the initial smoke test drives the modal explicitly.
 - CI runs **two jobs**: `mock-tests` (always) and `real-api-tests` (gated on

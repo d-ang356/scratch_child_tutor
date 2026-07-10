@@ -8,6 +8,14 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
+  <!-- Loading splash: shown on every open/refresh. Fades in, is held for at
+       least 1.5s (longer while the app's boot fetches run), then fades out.
+       The logo matches the app language (logo_en / logo_bg); app.js swaps the
+       src in applyI18n(). -->
+  <div id="splash" class="splash">
+    <img id="splashLogo" class="splash-logo" src="/img/logo_en.png" alt="Scratch Helper" />
+  </div>
+
   <header class="topbar">
     <div class="brand">
       <img class="logo" src="/img/logo.png" alt="Scratch Helper" />
@@ -58,7 +66,11 @@
     <section class="pane pane-blocks">
       <div class="pane-head blocks-head">
         <span data-i18n="blocksHead">Scratch blocks</span>
-        <div class="block-tabs" id="blockTabs"></div>
+        <div class="block-tabs empty" id="blockTabs">
+          <button class="tab-arrow" id="tabPrev" type="button" aria-label="Previous answers" hidden>‹</button>
+          <div class="tab-strip" id="tabStrip" role="tablist" aria-label="Scratch block answers"></div>
+          <button class="tab-arrow" id="tabNext" type="button" aria-label="Next answers" hidden>›</button>
+        </div>
       </div>
       <button class="scroll-to-msg" id="scrollToMsgBtn" title="Jump to the matching message" hidden>↖</button>
       <div class="blocks-scroll" id="blocksScroll">
@@ -86,6 +98,15 @@
             <label><input type="radio" name="pLang" value="en" checked> <span data-i18n="langEn">English</span></label>
             <label><input type="radio" name="pLang" value="bg"> <span data-i18n="langBg">Български</span></label>
           </div>
+        </div>
+        <div class="field">
+          <label data-i18n="prefsGender">Child's gender</label>
+          <div class="radio-row">
+            <label><input type="radio" name="pGender" value="boy"> <span data-i18n="genderBoy">Boy</span></label>
+            <label><input type="radio" name="pGender" value="girl"> <span data-i18n="genderGirl">Girl</span></label>
+            <label><input type="radio" name="pGender" value="unspecified" checked> <span data-i18n="genderUnspecified">Prefer not to say</span></label>
+          </div>
+          <div class="field-hint" data-i18n="prefsGenderHint">Used so the tutor's words match the child.</div>
         </div>
         <div class="field">
           <label data-i18n="prefsAge">Child's age (whole number, 1–17)</label>

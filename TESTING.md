@@ -263,9 +263,10 @@ no `if` and always runs. (The secret itself is passed to the real job's
 > `gpt-oss:120b`. The mock job reads `SCRATCH_MODEL` too (default `glm-5.2`),
 > but it doesn't matter there — `/api/chat` is intercepted.
 
-> Currently the `@real` tests are `test.skip()` placeholders, so the real job
-> is green with "skipped" until you implement them (see
-> `tests/real/safety.spec.js`).
+> The `@real` suite currently has one test — the safety-gate check in
+> `tests/real/safety.spec.js` (an off-topic question gets the canned refusal and
+> no blocks). It only runs when `OLLAMA_API_KEY` is set, so the real job is
+> "skipped" (via the `check-secret` gate) on repos with no key.
 
 ### What each job produces
 
@@ -329,12 +330,19 @@ class MyPage extends BasePage {
   filters, which is exactly the bug that made `rowByTitle()` not filter by
   title.
 - `this.open(path = '/')` — `page.goto(path)`.
+- `this.shrinkViewport({ width?, height? })` — `page.setViewportSize` (default
+  1280×440). Used by the follow-up tests so two answers overflow `#messages` and
+  the ↖ jump-to-message navigation actually has something to scroll. Call after
+  `open()` so the loading splash (already cleared) is not affected.
 
 ### ChatPage (`tests/pages/ChatPage.js`) — left chat pane + top-bar status
 
 | Member | What it is |
 |--------|-----------|
 | `welcome` | the `#welcome` card |
+| `splash` | the `#splash` loading overlay (shown on every open/refresh) |
+| `open(path?)` | **overrides `BasePage.open`**: `page.goto(path)` then `await expectSplashGone()` — so every spec starts with the splash cleared and the UI interactable. Always go through `chat.open()`, not raw `page.goto()` |
+| `expectSplashGone(timeout?)` | awaits `#splash` being hidden (the app removes it from layout via the `.hidden` class once the ≥1.5 s loading animation finishes). Call this after any direct `page.reload()` too, since the splash re-shows on reload |
 | `input`, `sendBtn` | composer textarea + send button |
 | `statusDot`, `statusText` | Ollama health indicator |
 | `newChatBtn` | top-right "New chat" |
@@ -356,10 +364,16 @@ class MyPage extends BasePage {
 |--------|-----------|
 | `blocksHost`, `blocksEmpty` | the rendered-blocks container / empty-state card |
 | `scrollToMsgBtn` | the hover "↖" jump-to-message button |
+| `tabsWrap`, `tabStrip`, `tabPrev`, `tabNext` | the `#blockTabs` wrapper, the `#tabStrip` scroll area, and the contextual `‹`/`›` overflow arrows (hidden unless tabs overflow) |
 | `tabs()` | the `Answer N` tabs |
 | `activeTab()` | the selected tab |
 | `renderedSvgs()` | the scratchblocks SVGs |
-| `selectTab(i)` | click a tab |
+| `selectTab(i)` | click a tab (Playwright auto-scrolls the strip to it) |
+| `expectActiveTabNumber(n)` | assert the active tab is the Nth answer — matches the i18n label in either language (`Answer N` / `Отговор N`) so the tab-strip scroll tests don't depend on which language a prior run left in `preferences.json` |
+| `tabStripHasNoScrollbar()` | true when the strip's native scrollbar is hidden (`offsetWidth === clientWidth`) — proves the arrows, not a scrollbar, are the scroll UI |
+| `tabVisibleInStrip(i)` | true when tab `i` overlaps the strip's visible area — proves the scroller actually revealed a far-away tab |
+| `jumpToAnswerAndAssert(i)` | select tab `i`, click ↖, wait for `#messages` to smooth-scroll to that answer's row; returns the clamped target scrollTop (used by the follow-up tests) |
+| `assertTwoTabsAndJumpIcons()` | two tabs exist, both render blocks, and ↖ on tab 1/2 scrolls to answer 1/2 (targets differ → icon is tab-aware) |
 | `expectBlocksRendered()` | asserts ≥1 SVG visible and empty-state hidden |
 | `expectEmpty()` | asserts 0 SVGs and empty-state visible |
 
@@ -368,15 +382,17 @@ class MyPage extends BasePage {
 | Member | What it is |
 |--------|-----------|
 | `modal` | the `#prefsModal` overlay |
+| `openBtn` | the `#prefsBtn` ⚙️ button (reopens the modal after first run) |
 | `ageInput`, `nameInput` | `#pAge`, `#pName` |
 | `ageError` | inline age validation error |
 | `saveBtn`, `cancelBtn`, `closeBtn` | action buttons |
 | `expectVisible()`, `expectHidden()` | modal visibility |
 | `isFirstRun()` | `data-first === "1"` (modal can't be dismissed until saved) |
-| `selectLang('en'\|'bg')`, `setAge(n)`, `setName(s)` | fill fields |
+| `selectLang('en'\|'bg')`, `selectGender('boy'\|'girl'\|'unspecified')`, `setAge(n)`, `setName(s)` | fill fields |
 | `save()` | click Save and wait for the modal to close |
+| `persistedGender()` | GET `/api/preferences` and return `body.prefs.gender` — proves the value round-tripped through `preferences.json`, not just that the radio stayed selected (used by the gender round-trip test) |
 | `cancel()` | click Cancel |
-| `ensureDismissed({lang?, age?, name?})` | if the first-run modal is open, fill it (defaults `en` / age 8, matching the smoke test) and save; else a no-op. **Use this in every non-initial spec** right after `chat.open()` so a missing `preferences.json` (fresh CI/Docker) doesn't block the test |
+| `ensureDismissed({lang?, age?, name?, gender?})` | if the first-run modal is open, fill it (defaults `en` / age 8 / gender `unspecified` — the pre-checked "Prefer not to say" radio, so the field is always set) and save; else a no-op. **Use this in every non-initial spec** right after `chat.open()` so a missing `preferences.json` (fresh CI/Docker) doesn't block the test |
 
 > **First run:** with no `preferences.json`, the app forces the modal open and
 > refuses to close it until a valid age is saved. Your test must save prefs
@@ -483,8 +499,12 @@ The shared DB is cleared and seeded **once** before all tests by
 `tests/support/globalSetup.js` (wired via `globalSetup` in `playwright.config.js`).
 Specs should **read** the seed rows and not call `db.clear()` themselves — a
 spec clearing the shared DB wipes rows out from under other specs (and under
-retries). The seed data lives in `tests/utils/testConstants.js`
-(`FULL_CONVERSATION_DATA`, `MEOW_CONVERSATION_DATA`).
+retries). The seed data and shared chat-insertion texts live in
+`tests/utils/testConstants.js`: the seed chats (`FULL_CONVERSATION_DATA`,
+`MEOW_CONVERSATION_DATA`), the follow-up answers/questions and block markup
+(`FOLLOWUP_ANSWER1/2`, `FOLLOWUP_Q1/2`, `walkBlocks`, `glideBlocks`), the
+`buildManyTabsConversation(count)` builder for the 20-tab arrow-scroll test, and
+the `OFFTOPIC_QUESTION` prompt for the `@real` safety-gate test.
 
 ```js
 // tests/support/globalSetup.js (runs once per run, before any test)
@@ -513,7 +533,7 @@ module.exports = async function () {
 
 ## 9. Mocking Ollama — guide and examples
 
-`tests/support/mockOllama.js` provides two helpers. Register the route **before**
+`tests/support/mockOllama.js` provides three helpers. Register the route **before**
 the action that triggers `POST /api/chat` (e.g. before clicking a chip).
 
 ### `mockChatAnswer(page, { content?, reasoning?, hold? })`
@@ -561,6 +581,28 @@ await expect(chat.lastAssistantBubble()).toContainText('cat');   // answer arriv
 > hits the mock, not the server), and call `release()` only **after** you've
 > asserted the thinking state — that's what makes the assertion a genuine
 > "thinking *before* answering" check, not a race.
+
+### `mockChatSequence(page, answers)`
+
+Fulfills each successive `POST /api/chat` with a **different** canned answer —
+`answers[0]` on the first call, `answers[1]` on the second, and so on (the last
+entry is reused for any extra calls). Use this for **follow-up** scenarios where
+a second question must produce a second, distinct answer with its own
+scratchblocks fence, so the right pane grows a second "Answer 2" tab. No
+reasoning, no hold — just sequential content.
+
+```js
+const { mockChatSequence } = require('../support/mockOllama');
+const { FOLLOWUP_ANSWER1, FOLLOWUP_ANSWER2 } = require('../utils/testConstants');
+await mockChatSequence(page, [FOLLOWUP_ANSWER1, FOLLOWUP_ANSWER2]);
+// send FOLLOWUP_Q1 -> ANSWER1 (tab 1), send FOLLOWUP_Q2 -> ANSWER2 (tab 2)
+```
+
+See `tests/specs/followupBlocks.spec.js` for a full example, including asserting
+the hover "↖" jump-to-message button scrolls the chat to the tab's answer. The
+answers/questions/block markup live in `tests/utils/testConstants.js`; the ↖
+scroll math and two-tab assertion live on `BlocksPanePage`
+(`jumpToAnswerAndAssert`, `assertTwoTabsAndJumpIcons`).
 
 ### `mockChatEmpty(page, { reasoning? })`
 
@@ -611,15 +653,24 @@ await page.route('**/api/chat', (route) =>
 
 3. **Compose page objects**; seed state with the SQLite factory if needed.
 
+   > **Loading splash:** `chat.open()` already waits for the `#splash` loading
+   > overlay to clear (≥1.5 s on every open/refresh) before returning, so you do
+   > not need to do anything special after `chat.open()`. If a spec calls
+   > `page.reload()` directly, follow it with `await chat.expectSplashGone()` —
+   > the splash re-shows on reload and would otherwise cover the UI.
+
    > **First-run modal:** every non-initial spec should call
    > `await prefs.ensureDismissed()` right after `chat.open()` — it fills and
    > saves the preferences modal if it's open (no `preferences.json` yet, e.g. a
    > fresh CI/Docker runner) and is a no-op otherwise. Skipping it makes a spec
-   > hang behind the modal in clean environments. The initial smoke test is the
-   > only one that drives the modal explicitly, because it tests the modal; it
-   > guarantees a clean first-run state by deleting `preferences.json` in
-   > `beforeEach` (the server reads the file fresh on each `/api/preferences`
-   > GET, so the next page load forces the modal).
+   > hang behind the modal in clean environments. The gender field defaults to
+   > `unspecified` (the pre-checked "Prefer not to say" radio), so the modal is
+   > always submittable without picking a gender; pass `gender: 'boy'|'girl'` to
+   > `ensureDismissed` when a test needs a specific gender in the prompt. The
+   > initial smoke test is the only one that drives the modal explicitly, because
+   > it tests the modal; it guarantees a clean first-run state by deleting
+   > `preferences.json` in `beforeEach` (the server reads the file fresh on each
+   > `/api/preferences` GET, so the next page load forces the modal).
 
 4. **Example — a mocked test** (no real Ollama):
 
@@ -789,6 +840,13 @@ await page.route('**/api/chat', (route) =>
 - **`unable to open database file`** — only happens if you override
   `SCRATCH_DB_PATH` to a path whose parent doesn't exist. The server and factory
   both create the parent dir now, so this should not recur.
+- **Every `chat.open()` takes ≥1.5 s** — that's the loading splash, not a hang.
+  The app shows a `#splash` overlay for at least 1.5 s (longer while the boot
+  fetches run) on every open/refresh, and `ChatPage.open()` awaits it clearing.
+  With `workers: 1` this adds roughly 1.5 s per `chat.open()` to the suite time.
+  If a test times out at 10 s right after `open()`, the splash never cleared —
+  which means one of the boot fetches (`/api/health`, `/api/preferences`,
+  `/api/chats`) hung; check the server log, not the splash code.
 - **Tests pass locally but fail in CI (mock)** — the `@mock` suite is
   deterministic, so a CI-only failure usually means a selector or timing change.
   Download the `playwright-report-*` artifact and open it; check the trace
@@ -827,23 +885,26 @@ playwright.config.js            webServer (auto-start / reuse), reporters, proje
 package.json                    @playwright/test (devDependency) + test scripts
 tests/
   pages/
-    BasePage.js                 base page object (page, baseUrl, loc, open)
-    ChatPage.js                 left chat pane + status
+    BasePage.js                 base page object (page, baseUrl, loc, open, shrinkViewport)
+    ChatPage.js                 left chat pane + status; open() awaits the loading splash
     BlocksPanePage.js           right scratch-blocks pane + tabs
     PreferencesModalPage.js     preferences modal
     ChatHistoryDrawerPage.js    chat history drawer
   support/
     env.js                      baseUrl() / dbPath()
     globalSetup.js              seeds the shared DB once before all tests
-    mockOllama.js               mockChatAnswer / mockChatEmpty
+    mockOllama.js               mockChatAnswer / mockChatSequence / mockChatEmpty
     sqliteFactory.js            clear / reset / createNew / insert* / list / get
   utils/
-    testConstants.js            shared seed chats (FULL/MEOW) + block markup
+    testConstants.js            shared seed chats (FULL/MEOW) + follow-up answers/questions + 20-tab builder + OFFTOPIC_QUESTION
   specs/
     initial.spec.js             @mock initial smoke test (first-run modal)
     newChatAndDeleteChat.spec.js @mock new-chat + delete-chat (self-contained)
+    gender.spec.js              @mock gender preference round-trip (persist + reload)
+    followupBlocks.spec.js      @mock follow-up -> 2nd block tab + ↖ jump-to-message (fresh + seeded chat); 20-tab arrow-scroll test
+    splashLogo.spec.js          @mock served index.html splash logo matches saved language (no EN flash on BG refresh)
   real/
-    safety.spec.js              @real safety-gate tests (scaffolded, skipped)
+    safety.spec.js              @real safety-gate test (off-topic -> refusal; gated on key)
 Dockerfile                      app image (zero-dep, node:22-slim)
 .dockerignore                   keeps the app image small (excludes root *.md explicitly, not **/*.md)
 docker-compose.yml              app + Playwright containers (shared DB volume; `expose`, no host port)

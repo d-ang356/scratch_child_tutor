@@ -27,6 +27,16 @@ class BasePage {
   loc(selector, options) {
     return this.page.locator(selector, options);
   }
+
+  // Shrink the viewport so a multi-answer chat overflows the #messages pane —
+  // otherwise the ↖ jump-to-message navigation has nothing to scroll. Call after
+  // open() (which already cleared the loading splash) so the splash is not
+  // affected. Default 1280x440 fits the app layout while forcing two answers to
+  // overflow; override for other scenarios.
+  async shrinkViewport({ width = 1280, height = 440 } = {}) {
+    await this.page.setViewportSize({ width, height });
+    return this;
+  }
 }
 
 module.exports = { BasePage };

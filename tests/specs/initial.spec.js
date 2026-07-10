@@ -49,6 +49,7 @@ test('initial screen, Ollama connected, suggestion chip starts a chat @mock', as
   // First run: preferences modal is forced (no preferences.json yet).
   await expect(prefs.modal).toBeVisible();
   await prefs.selectLang('en');
+  await prefs.selectGender('boy');
   await prefs.setAge(8);
   await prefs.save();
   await expect(prefs.modal).toBeHidden();

@@ -15,11 +15,29 @@ const { BasePage } = require('./BasePage');
 
 class ChatPage extends BasePage {
   get welcome() { return this.loc('#welcome'); }
+  get splash() { return this.loc('#splash'); }
   get input() { return this.loc('#input'); }
   get sendBtn() { return this.loc('#sendBtn'); }
   get statusDot() { return this.loc('#statusDot'); }
   get statusText() { return this.loc('#statusText'); }
   get newChatBtn() { return this.loc('#newChatBtn'); }
+
+  // Navigate to the app and wait for the loading splash (#splash) to leave the
+  // layout before returning. The splash is shown on every open/refresh for
+  // >=1.5s (longer while the app's boot fetches run) and covers the whole UI at
+  // z-index 9999, so every spec must wait for it to be gone before interacting.
+  // Awaits #splash being hidden (display:none via the .hidden class) or absent;
+  // if there is no splash element it resolves immediately.
+  async open(path = '/') {
+    await super.open(path);
+    await this.expectSplashGone();
+    return this;
+  }
+
+  async expectSplashGone(timeout = 10000) {
+    await this.splash.waitFor({ state: 'hidden', timeout });
+    return this;
+  }
 
   exampleItems() { return this.loc('#examples li[data-q]'); }
   userBubbles() { return this.loc('#messages .msg.user .bubble'); }

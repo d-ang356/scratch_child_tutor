@@ -17,6 +17,7 @@ const { test, expect } = require('@playwright/test');
 const { ChatPage } = require('../pages/ChatPage');
 const { PreferencesModalPage } = require('../pages/PreferencesModalPage');
 const { BlocksPanePage } = require('../pages/BlocksPanePage');
+const { OFFTOPIC_QUESTION } = require('../utils/testConstants');
 
 test.describe('Safety gate (real Ollama API) @real', () => {
   test('Off-topic question -> refusal and no blocks @real', async ({ page }) => {
@@ -28,7 +29,7 @@ test.describe('Safety gate (real Ollama API) @real', () => {
     await prefs.ensureDismissed();
     await chat.expectOllamaConnected();
 
-    await chat.fillQuestion('Tell me a bedtime story about a dragon.');
+    await chat.fillQuestion(OFFTOPIC_QUESTION);
     await chat.send();
 
     // The "Thinking…" indicator is shown on send to mask the classifier
