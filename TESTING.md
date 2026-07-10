@@ -916,7 +916,7 @@ scripts/test.sh / test.bat      no-Docker local run
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `BASE_URL` | `http://127.0.0.1:8787` | App URL Playwright targets (Docker: `http://app:8787`) |
+| `BASE_URL` | `http://127.0.0.1:8787` | App URL Playwright targets (Docker: `http://scratch-app:8787`) |
 | `SCRATCH_DB_PATH` | `test-data/scratch_helper.test.db` | DB the app + factory share |
 | `OLLAMA_BASE` | `https://ollama.com` | Ollama backend |
 | `OLLAMA_API_KEY` | `mock-dummy-key` | Cloud API key (real for `@real`) |

@@ -12,7 +12,9 @@ COPY scratchblocks-prompts/ ./scratchblocks-prompts/
 COPY img/ ./img/
 
 # Bind all interfaces + a fixed port so the Playwright container can reach the
-# app at http://app:8787. SCRATCH_NO_OPEN disables the desktop browser launch.
+# app at http://scratch-app:8787. SCRATCH_NO_OPEN disables the desktop browser
+# launch. (The compose service is named scratch-app, not app, to avoid Chromium
+# HSTS-upgrading the bare `app` hostname — see docker-compose.yml.)
 ENV HOST=0.0.0.0 \
     PORT=8787 \
     SCRATCH_NO_OPEN=1

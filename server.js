@@ -54,8 +54,10 @@ function loadEnvFile() {
 loadEnvFile();
 
 // HOST/PORT are configurable so the app can bind 0.0.0.0 and a fixed port inside
-// Docker (the Playwright test container reaches it at http://app:8787). Default
-// stays 127.0.0.1 + the 8787-8790 fallback chain for normal desktop use.
+// Docker (the Playwright test container reaches it at http://scratch-app:8787 —
+// the compose service is named scratch-app, not app, to avoid Chromium
+// HSTS-upgrading the bare `app` hostname to HTTPS). Default stays 127.0.0.1 +
+// the 8787-8790 fallback chain for normal desktop use.
 const HOST = process.env.HOST || '127.0.0.1';
 const PORTS = process.env.PORT ? [Number(process.env.PORT)] : [8787, 8788, 8789, 8790];
 const OLLAMA_BASE = process.env.OLLAMA_BASE || 'http://localhost:11434';

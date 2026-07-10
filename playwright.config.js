@@ -14,8 +14,10 @@
 // No-docker local run: `npm test` — Playwright's webServer launches the app
 //   itself (reuseExistingServer, so if you already run `npm start` it reuses it).
 // Docker run: `npm run test:docker` — the app runs in its own container and the
-//   tests run in the official Playwright container; set BASE_URL=http://app:8787
-//   so webServer reuses the app container instead of launching one.
+//   tests run in the official Playwright container; set BASE_URL=http://scratch-app:8787
+//   so webServer reuses the app container instead of launching one. (The compose
+//   service is named scratch-app, not app, so Chromium doesn't HSTS-upgrade the
+//   bare `app` hostname to HTTPS — the app is plain HTTP.)
 
 const { defineConfig, devices } = require('@playwright/test');
 
