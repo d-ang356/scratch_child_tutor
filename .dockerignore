@@ -1,0 +1,17 @@
+# Keep the app image small: exclude everything the server doesn't need at runtime.
+node_modules
+test-data
+playwright-report
+test-results
+tests
+playwright.config.js
+.git
+.github
+.claude
+scripts
+*.md
+*.db
+*.db-*
+preferences.json
+.env
+.env.*

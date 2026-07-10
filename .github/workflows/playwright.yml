@@ -1,0 +1,94 @@
+name: Playwright tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# checks: write is for the pass/fail summary (dorny/test-reporter).
+permissions:
+  contents: read
+  checks: write
+  actions: read
+
+jobs:
+  # Detect whether the real-API secret is configured. The `secrets` context is
+  # NOT available in a job-level `if`, so we materialize it into an output here
+  # and gate the real shard on that output. Without this, `real-api-tests` would
+  # silently never run (the old `if: ${{ secrets.OLLAMA_API_KEY != '' }}` was a
+  # no-op).
+  check-secret:
+    name: Check for Ollama API key
+    runs-on: ubuntu-latest
+    outputs:
+      has_key: ${{ steps.set.outputs.has_key }}
+    steps:
+      - id: set
+        run: |
+          if [ -n "${{ secrets.OLLAMA_API_KEY }}" ]; then
+            echo "has_key=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Two shards run independently as separate matrix legs, each on its own runner
+  # and with its OWN docker compose project (COMPOSE_PROJECT_NAME) so the dbdata
+  # / nm volumes and app/tests containers never collide — even if two legs ever
+  # shared a runner. The real shard (@real) is gated on the secret.
+  tests:
+    name: ${{ matrix.summary }}
+    needs: check-secret
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: mock
+            grep: "@mock"
+            project: scratch-mock
+            report-artifact: playwright-report-mock
+            report-name: Mock functional tests
+            summary: Mock functional tests
+            needs-key: false
+          - shard: real
+            grep: "@real"
+            project: scratch-real
+            report-artifact: playwright-report-real
+            report-name: Real Ollama API tests
+            summary: Real Ollama API tests
+            needs-key: true
+    # Mock runs always; real runs only when the key was detected. (matrix and
+    # needs.*.outputs ARE allowed in a job-level if — only `secrets` is not.)
+    if: ${{ !matrix.needs-key || needs.check-secret.outputs.has_key == 'true' }}
+    env:
+      # Isolate this shard's compose resources (volumes + containers + network).
+      COMPOSE_PROJECT_NAME: ${{ matrix.project }}
+      OLLAMA_BASE: https://ollama.com
+      # Mock shard never calls Ollama (/api/chat is intercepted at the browser
+      # boundary); a dummy key just makes /api/health report connected. The real
+      # shard uses the actual secret.
+      OLLAMA_API_KEY: ${{ (matrix.shard == 'real' && secrets.OLLAMA_API_KEY) || 'mock-dummy-key' }}
+      SCRATCH_MODEL: ${{ matrix.shard == 'real' && (vars.SCRATCH_MODEL || 'gpt-oss:20b') || (vars.SCRATCH_MODEL || 'glm-5.2') }}
+      PLAYWRIGHT_ARGS: "--grep ${{ matrix.grep }}"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run tests in containers
+        run: docker compose up --abort-on-container-exit --exit-code-from tests --build
+
+      - name: Publish pass/fail summary
+        if: always()
+        uses: dorny/test-reporter@v1
+        with:
+          name: ${{ matrix.report-name }}
+          path: test-results/junit.xml
+          reporter: java-junit
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.report-artifact }}
+          path: playwright-report/
+          retention-days: 14

@@ -1,0 +1,66 @@
+# Two-container test setup:
+#   app    — scratch_helper built from ./Dockerfile (zero-dep Node app).
+#   tests  — official Playwright image (mcr.microsoft.com/playwright:v1.61.1)
+#            with the repo mounted at /work; runs `npx playwright test`.
+#
+# The two containers share the `dbdata` volume so the SQLite test factory (in the
+# tests container) can read/write the same DB the app (in the app container)
+# uses. Set OLLAMA_API_KEY / SCRATCH_MODEL / PLAYWRIGHT_ARGS to switch between
+# the mocked suite (@mock, default) and the real-API suite (@real).
+#
+# Run:   docker compose up --abort-on-container-exit --exit-code-from tests --build
+#        (or: npm run test:docker)
+
+services:
+  app:
+    build: .
+    environment:
+      OLLAMA_BASE: ${OLLAMA_BASE:-https://ollama.com}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-mock-dummy-key}
+      SCRATCH_MODEL: ${SCRATCH_MODEL:-glm-5.2}
+      SCRATCH_DB_PATH: /data/scratch_helper.db
+      HOST: 0.0.0.0
+      PORT: 8787
+      SCRATCH_NO_OPEN: "1"
+    volumes:
+      - dbdata:/data
+    ports:
+      - "8787:8787"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  tests:
+    image: mcr.microsoft.com/playwright:v1.61.1
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      BASE_URL: http://app:8787
+      SCRATCH_DB_PATH: /data/scratch_helper.db
+      OLLAMA_BASE: ${OLLAMA_BASE:-https://ollama.com}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-mock-dummy-key}
+      SCRATCH_MODEL: ${SCRATCH_MODEL:-glm-5.2}
+      # The Playwright image ships browsers at /ms-playwright; tell the npm
+      # package to use them and skip its own browser download.
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      PLAYWRIGHT_ARGS: ${PLAYWRIGHT_ARGS:---grep @mock}
+    volumes:
+      - ./:/work
+      - dbdata:/data
+      # Cache node_modules across runs inside the container (Linux binaries).
+      - nm:/work/node_modules
+    working_dir: /work
+    # Install @playwright/test (the image has browsers but not the npm package),
+    # then run the tests. --no-package-lock avoids writing a Linux-platform lock
+    # file back into the host repo via the mount. Exit code propagates via
+    # --exit-code-from tests.
+    command: sh -c "npm install --no-audit --no-fund --no-package-lock && npx playwright test $PLAYWRIGHT_ARGS"
+
+volumes:
+  dbdata:
+  nm:

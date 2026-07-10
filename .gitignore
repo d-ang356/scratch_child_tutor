@@ -370,3 +370,8 @@ scratch_helper.db-journal
 scratch_helper.db-wal
 scratch_helper.db-shm
 
+# Playwright test artifacts (local no-docker runs)
+test-data/
+playwright-report/
+test-results/
+

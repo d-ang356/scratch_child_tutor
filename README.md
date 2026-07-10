@@ -98,6 +98,83 @@ A browser opens at `http://127.0.0.1:8787`.
 If port 8787 is busy the server automatically tries 8788–8790 and prints the
 address it used.
 
+## Testing
+
+> **Full guide:** see [`TESTING.md`](TESTING.md) for setup, local + Docker +
+> CI runs, the page objects, the SQLite factory, the Ollama mock helpers, and a
+> step-by-step "write a new test" walkthrough.
+
+Functional tests use **Playwright** (JavaScript). Playwright is a **dev-only**
+
+Functional tests use **Playwright** (JavaScript). Playwright is a **dev-only**
+dependency — the app itself stays zero-dependency, and normal users never need
+`npm install`. Only developers/CI install it.
+
+One-time setup for local no-Docker runs:
+```
+npm install
+```
+
+### No-Docker local run
+```
+scripts/test.sh          # Linux / macOS
+scripts\test.bat         # Windows
+# or just:  npm test
+```
+Playwright's `webServer` (see `playwright.config.js`) starts the app itself on
+`http://127.0.0.1:8787`, so you don't run `npm start` separately. The mocked
+suite (`@mock`) intercepts `/api/chat` at the browser boundary, so **no real
+Ollama call is made** and no API key is needed. Run only the mock suite:
+```
+npm run test:mock
+```
+The real-API suite (`@real`) exercises the full server→Ollama path and needs a
+real `OLLAMA_API_KEY` (and `SCRATCH_MODEL`) in your environment or `.env`:
+```
+npm run test:real
+```
+
+### Docker run (same as CI)
+```
+npm run test:docker
+```
+This brings up two containers via `docker-compose.yml`: the app (built from
+`Dockerfile`) and the official Playwright container (`mcr.microsoft.com/playwright:v1.61.1`).
+To run the real-API suite in Docker:
+```
+OLLAMA_API_KEY=<key> SCRATCH_MODEL=gpt-oss:20b PLAYWRIGHT_ARGS="--grep @real" npm run test:docker
+```
+
+### CI (GitHub Actions)
+`.github/workflows/playwright.yml` runs on every PR and push to `main`:
+- **Mock functional tests** — always. Deterministic, no secret needed.
+- **Real Ollama API tests** — only when the `OLLAMA_API_KEY` repo secret is set.
+  (Currently scaffolded as skipped placeholders in `tests/real/safety.spec.js`
+  — implement the two safety-gate scenarios there.)
+
+Each run uploads the **Playwright HTML report** as a downloadable artifact and
+posts a **pass/fail summary** to the workflow run page (via JUnit +
+`dorny/test-reporter`).
+
+### Test layout
+```
+playwright.config.js          webServer, reporters, projects
+tests/
+  pages/                      page objects (Base, Chat, BlocksPane, Preferences, ChatHistory)
+  support/                    mockOllama (route interception), sqliteFactory, env
+  specs/initial.spec.js       @mock initial smoke test
+  real/safety.spec.js         @real safety-gate tests (to implement)
+Dockerfile                    app image (zero-dep)
+docker-compose.yml            app + Playwright containers (shared DB volume)
+.github/workflows/playwright.yml
+scripts/test.sh / test.bat    no-Docker local run
+```
+
+The **SQLite factory** (`tests/support/sqliteFactory.js`) opens the same DB file
+the app uses (`SCRATCH_DB_PATH`, shared via a Docker volume in CI) and can
+`clear()` / `reset()` / `createNew()` and `insertChat` / `insertMessage` /
+`insertConversation` for seeding scenarios.
+
 ## How to use
 
 - Type a question like *“How do I make the cat walk and say hello?”* or

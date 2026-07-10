@@ -102,6 +102,16 @@ public/
   locales/bg.json               Bulgarian block locale
 scratchblocks-prompts/system.md Tutor system prompt (bilingual + safety)
 start.bat / start.sh            Launchers
+playwright.config.js            Playwright config (webServer, reporters, projects)
+tests/
+  pages/                        page objects (Base/Chat/BlocksPane/Preferences/ChatHistory)
+  support/                      mockOllama (route interception), sqliteFactory, env
+  specs/initial.spec.js         @mock initial smoke test
+  real/safety.spec.js           @real safety-gate tests (to implement)
+Dockerfile                      app image (zero-dep, node:22-slim)
+docker-compose.yml              app + official Playwright container (shared DB volume)
+.github/workflows/playwright.yml CI: 2 shards (mock always, real gated on OLLAMA_API_KEY via check-secret job; isolated compose projects)
+scripts/test.sh / test.bat      no-Docker local test run
 ```
 
 ## Git / local data
@@ -135,7 +145,56 @@ start.bat / start.sh            Launchers
   emit blocks in the same language the child asked in (`en` or `bg`).
 - Ollama blocks cross-origin browser requests; that is why the same-origin Node proxy
   exists. Do not try to call Ollama directly from `app.js`.
-- Port fallback: `server.js` tries 8787, 8788, 8789, 8790.
+- Port fallback: `server.js` tries 8787, 8788, 8789, 8790 — unless `PORT` is set,
+  in which case it binds only that port. `HOST` (default `127.0.0.1`) and
+  `SCRATCH_DB_PATH` (default `scratch_helper.db` next to `server.js`) are also
+  env-configurable, mainly for the Docker test setup (bind `0.0.0.0`, share a DB
+  volume with the SQLite test factory). `SCRATCH_NO_OPEN=1` skips the desktop
+  browser launch (headless/CI/Docker). `initDB` sets `PRAGMA journal_mode=WAL`
+  + `busy_timeout=5000` so the test factory can read/write the same DB file
+  concurrently with the server.
+
+## Functional tests (Playwright)
+- Playwright is a **dev-only** dependency (`@playwright/test` 1.61.1 in
+  `package.json`); the app stays zero-dependency and normal users never run
+  `npm install`. The Docker test image is the official
+  `mcr.microsoft.com/playwright:v1.61.1` — keep its tag in sync with the npm
+  version or browsers won't match.
+- Two test groups, selected by tag in the test title:
+  - **`@mock`** — `page.route('**/api/chat', fulfill)` short-circuits at the
+    browser→server boundary, so the server classifier + Ollama call **never
+    run**. Deterministic, free, no secret. `/api/health` is NOT intercepted, so
+    "Ollama connected" is still verified (green in cloud mode whenever a key —
+    even the `mock-dummy-key` default — is set). The initial smoke test lives
+    here. Do NOT mock `/api/health` — that would defeat the connection check.
+  - **`@real`** — no interception; the full server→Ollama path runs. Needs a
+    real `OLLAMA_API_KEY`. Used for the safety gate: Scratch question → answer +
+    blocks; off-topic → neither. CI runs these only when the secret is set.
+- `playwright.config.js` `webServer` auto-starts the app for no-Docker local
+  runs and **reuses** the app container for Docker/CI runs (via `BASE_URL`).
+  Workers=1, no parallelism — tests share one app + one SQLite DB.
+- The **SQLite factory** (`tests/support/sqliteFactory.js`) opens the same DB
+  file via `node:sqlite` (WAL + busy_timeout) and can clear/reset/createNew and
+  seed chats/messages. In Docker, `SCRATCH_DB_PATH` points both containers at a
+  shared volume. Cross-container SQLite over a shared volume is fine for the
+  factory's seed/clear workload; avoid heavy concurrent writes.
+- Page objects derive from `tests/pages/BasePage.js` (`loc(selector, options)`
+  forwards Playwright filter options like `hasText`/`has` — dropping the 2nd
+  arg silently breaks title filters, which is why `rowByTitle` filters by
+  `hasText`). Add new screens as new page objects rather than driving selectors
+  inline in specs. Non-initial specs call `prefs.ensureDismissed()` right after
+  `chat.open()` so a missing `preferences.json` (fresh CI/Docker) doesn't block
+  the test; the initial smoke test drives the modal explicitly.
+- CI runs **two shards** via a matrix job: `mock` (always) and `real` (gated on
+  `OLLAMA_API_KEY`). Each shard is a separate matrix leg on its own runner with
+  its own `COMPOSE_PROJECT_NAME` (`scratch-mock` / `scratch-real`) so the
+  `dbdata`/`nm` volumes and `app`/`tests` containers never collide between
+  shards; `fail-fast: false`. The real shard is gated through a `check-secret`
+  job because a job-level `if` cannot read the `secrets` context — the secret is
+  materialized into a job output first, then `if: ${{ !matrix.needs-key ||
+  needs.check-secret.outputs.has_key == 'true' }}` decides. CI reports: HTML
+  report uploaded as an artifact (one per shard); JUnit XML →
+  `dorny/test-reporter` posts a pass/fail summary on the workflow run.
 
 ## Style guidelines
 - Match existing code: plain ES modules in browser, CommonJS in Node, minimal comments,

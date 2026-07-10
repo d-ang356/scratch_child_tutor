@@ -53,8 +53,11 @@ function loadEnvFile() {
 }
 loadEnvFile();
 
-const HOST = '127.0.0.1';
-const PORTS = [8787, 8788, 8789, 8790];
+// HOST/PORT are configurable so the app can bind 0.0.0.0 and a fixed port inside
+// Docker (the Playwright test container reaches it at http://app:8787). Default
+// stays 127.0.0.1 + the 8787-8790 fallback chain for normal desktop use.
+const HOST = process.env.HOST || '127.0.0.1';
+const PORTS = process.env.PORT ? [Number(process.env.PORT)] : [8787, 8788, 8789, 8790];
 const OLLAMA_BASE = process.env.OLLAMA_BASE || 'http://localhost:11434';
 const OLLAMA_API_KEY = process.env.OLLAMA_API_KEY || null;
 const MODEL = process.env.SCRATCH_MODEL || 'glm-5.2:cloud';
@@ -81,7 +84,9 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const IMG_DIR = path.join(__dirname, 'img');
 const SYSTEM_PROMPT_PATH = path.join(__dirname, 'scratchblocks-prompts', 'system.md');
 const PREFS_PATH = path.join(__dirname, 'preferences.json');
-const DB_PATH = path.join(__dirname, 'scratch_helper.db');
+// SCRATCH_DB_PATH lets tests point the app at an isolated DB (and share it with
+// the SQLite test factory via a Docker volume). Defaults to the local file.
+const DB_PATH = process.env.SCRATCH_DB_PATH || path.join(__dirname, 'scratch_helper.db');
 
 // Load the tutor system prompt once at startup.
 let SYSTEM_PROMPT = '';
@@ -119,7 +124,16 @@ function initDB() {
     console.error('WARNING: node:sqlite is not available on this Node build. Chat history will be disabled.');
     return;
   }
+  // If SCRATCH_DB_PATH points into a directory that doesn't exist yet (e.g. a
+  // fresh test-data/ or a Docker volume mount), create it so the open succeeds.
+  try { fs.mkdirSync(path.dirname(DB_PATH) || '.', { recursive: true }); } catch (_) {}
   db = new DatabaseSync(DB_PATH);
+  // WAL + a busy timeout let the test SQLite factory read/write the same DB file
+  // while the server holds it open (and improve concurrent read access generally).
+  try {
+    db.exec('PRAGMA journal_mode=WAL');
+    db.exec('PRAGMA busy_timeout=5000');
+  } catch (e) { /* PRAGMA best-effort */ }
   db.exec(`
     CREATE TABLE IF NOT EXISTS chats (
       id TEXT PRIMARY KEY,
@@ -592,12 +606,16 @@ function listenOnAvailablePort(i) {
     console.log(`System prompt loaded:   ${SYSTEM_PROMPT ? 'yes' : 'NO (missing file!)'}`);
     console.log(`Chat history (sqlite):  ${db ? 'enabled' : 'disabled (node:sqlite unavailable)'}`);
     console.log(`Open the page in your browser. Press Ctrl+C to stop.`);
-    // Open the browser (best-effort, non-fatal).
-    const opener =
-      process.platform === 'win32' ? `start "" "${base}"` :
-      process.platform === 'darwin' ? `open "${base}"` :
-      `xdg-open "${base}"`;
-    try { exec(opener); } catch (_) { /* ignore */ }
+    // Open the browser (best-effort, non-fatal). SCRATCH_NO_OPEN skips it — used
+    // in Docker/headless/CI where no GUI browser exists. The callback swallows
+    // spawn errors so a missing `start`/`xdg-open` can't crash the process.
+    if (process.env.SCRATCH_NO_OPEN !== '1') {
+      const opener =
+        process.platform === 'win32' ? `start "" "${base}"` :
+        process.platform === 'darwin' ? `open "${base}"` :
+        `xdg-open "${base}"`;
+      try { exec(opener, () => {}); } catch (_) { /* ignore */ }
+    }
   });
 }
 
