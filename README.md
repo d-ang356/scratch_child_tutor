@@ -162,17 +162,25 @@ posts a **pass/fail summary** to the workflow run page (via JUnit +
 
 ### Test layout
 ```
-playwright.config.js          webServer, reporters, projects
+playwright.config.js          webServer, reporters, projects (workers=1 — serial)
 tests/
   pages/                      page objects (Base, Chat, BlocksPane, Preferences, ChatHistory)
-  support/                    mockOllama (route interception), sqliteFactory, env
-  specs/initial.spec.js       @mock initial smoke test
+  support/                    mockOllama (route interception), sqliteFactory, env, globalSetup (seeds DB once)
+  utils/testConstants.js      shared seed chats + block markup
+  specs/initial.spec.js       @mock initial smoke test (first-run modal)
+  specs/newChatAndDeleteChat.spec.js  @mock new-chat + delete-chat
   real/safety.spec.js         @real safety-gate tests (to implement)
 Dockerfile                    app image (zero-dep)
 docker-compose.yml            app + Playwright containers (shared DB volume)
 .github/workflows/playwright.yml
 scripts/test.sh / test.bat    no-Docker local run
 ```
+
+Tests run **serially** (`workers: 1`): the suite shares one app instance, one
+SQLite DB, and one `preferences.json`, so it is not parallel-safe at `workers>1`
+(the first-run test deletes `preferences.json`; another test saving prefs
+concurrently can recreate it before the first-run page reads it). See
+[`TESTING.md`](TESTING.md) for the full rationale and how to lift that later.
 
 The **SQLite factory** (`tests/support/sqliteFactory.js`) opens the same DB file
 the app uses (`SCRATCH_DB_PATH`, shared via a Docker volume in CI) and can

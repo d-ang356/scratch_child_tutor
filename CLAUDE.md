@@ -105,12 +105,14 @@ start.bat / start.sh            Launchers
 playwright.config.js            Playwright config (webServer, reporters, projects)
 tests/
   pages/                        page objects (Base/Chat/BlocksPane/Preferences/ChatHistory)
-  support/                      mockOllama (route interception), sqliteFactory, env
-  specs/initial.spec.js         @mock initial smoke test
+  support/                      mockOllama (route interception), sqliteFactory, env, globalSetup (seeds DB once)
+  utils/testConstants.js        shared seed chats (FULL/MEOW) + block markup
+  specs/initial.spec.js         @mock initial smoke test (first-run modal; deletes preferences.json in beforeEach)
+  specs/newChatAndDeleteChat.spec.js @mock new-chat + delete-chat (delete is self-contained)
   real/safety.spec.js           @real safety-gate tests (to implement)
 Dockerfile                      app image (zero-dep, node:22-slim)
-docker-compose.yml              app + official Playwright container (shared DB volume)
-.github/workflows/playwright.yml CI: 2 shards (mock always, real gated on OLLAMA_API_KEY via check-secret job; isolated compose projects)
+docker-compose.yml              app + official Playwright container (shared DB volume; `expose`, no host port)
+.github/workflows/playwright.yml CI: 2 jobs (mock always, real gated on OLLAMA_API_KEY via check-secret; isolated compose projects; workers=1 serial; concurrency cancels superseded runs; reporter guarded + continue-on-error)
 scripts/test.sh / test.bat      no-Docker local test run
 ```
 
@@ -179,7 +181,16 @@ scripts/test.sh / test.bat      no-Docker local test run
     blocks; off-topic → neither. CI runs these only when the secret is set.
 - `playwright.config.js` `webServer` auto-starts the app for no-Docker local
   runs and **reuses** the app container for Docker/CI runs (via `BASE_URL`).
-  Workers=1, no parallelism — tests share one app + one SQLite DB.
+  `globalSetup` (`tests/support/globalSetup.js`) clears + seeds the shared DB
+  once before all tests; specs read the seed rows and must NOT call `db.clear()`
+  themselves (that wipes rows out from under other specs/retries). `workers=1`
+  is **required**, not just preferred — the suite is NOT parallel-safe at
+  `workers>1`: `initial.spec.js` deletes `preferences.json` to force the
+  first-run modal, and a concurrent spec saving prefs recreates it before the
+  initial page reads `/api/preferences`, so the modal never opens (reproduced
+  ~1/8 at `workers=2`). Serial execution is race-free. To raise workers later,
+  first decouple `initial.spec` from the shared `preferences.json` (e.g. mock
+  `/api/preferences`).
 - The **SQLite factory** (`tests/support/sqliteFactory.js`) opens the same DB
   file via `node:sqlite` (WAL + busy_timeout) and can clear/reset/createNew and
   seed chats/messages. In Docker, `SCRATCH_DB_PATH` points both containers at a
@@ -192,19 +203,29 @@ scripts/test.sh / test.bat      no-Docker local test run
   inline in specs. Non-initial specs call `prefs.ensureDismissed()` right after
   `chat.open()` so a missing `preferences.json` (fresh CI/Docker) doesn't block
   the test; the initial smoke test drives the modal explicitly.
-- CI runs **two shards** as two separate jobs: `mock-tests` (always) and
-  `real-api-tests` (gated on `OLLAMA_API_KEY`). Each is its own job on its own
-  runner with its own `COMPOSE_PROJECT_NAME` (`scratch-mock` / `scratch-real`)
-  so the `dbdata`/`nm` volumes and `app`/`tests` containers never collide
-  between shards. The real shard is gated through a `check-secret` job because a
-  job-level `if` can read `needs.*.outputs` but **not** `secrets` **or
-  `matrix`** — the secret is materialized into a job output, then
-  `if: ${{ needs.check-secret.outputs.has_key == 'true' }}` skips the whole real
-  job when there is no key. (Triggers are `pull_request` to `main` and `push` to
-  `main` only — no `workflow_dispatch` — so the workflow never runs without a
-  PR or a push to `main`; a feature-branch push only triggers YAML validation,
-  not a run.) CI reports: HTML report uploaded as an artifact (one per shard);
-  JUnit XML → `dorny/test-reporter` posts a pass/fail summary on the run.
+- CI runs **two jobs**: `mock-tests` (always) and `real-api-tests` (gated on
+  `OLLAMA_API_KEY`). Each is its own job on its own runner with its own
+  `COMPOSE_PROJECT_NAME` (`scratch-mock` / `scratch-real`) so the
+  `dbdata`/`nm` volumes and `app`/`tests` containers never collide. There is
+  **no internal sharding** (no `--shard` matrix) — the `@mock` suite is small,
+  and sharding would multiply the per-shard Docker build + `npm install`
+  overhead for ~0s of savings and leave an empty green shard; re-enable a
+  `--shard k/N` matrix once `@mock` grows past ~10 tests. Each job runs serially
+  (`workers: 1`, required — see above). The real job is gated through a
+  `check-secret` job because a job-level `if` can read `needs.*.outputs` but
+  **not** `secrets` **or `matrix`** — the secret is materialized into a job
+  output (via an `env:`-mapped secret, not interpolated into the `run` script),
+  then `if: ${{ needs.check-secret.outputs.has_key == 'true' }}` skips the whole
+  real job when there is no key. (Triggers are `pull_request` to `main` and
+  `push` to `main` only — no `workflow_dispatch` — so the workflow never runs
+  without a PR or a push to `main`; a feature-branch push only triggers YAML
+  validation, not a run.) A `concurrency` block cancels superseded runs on the
+  same ref/event. CI reports: HTML report uploaded as an artifact (one per job);
+  JUnit XML → `dorny/test-reporter` posts a pass/fail summary on the run. The
+  reporter step is guarded with `hashFiles('test-results/junit.xml')` and
+  `continue-on-error: true`, so a missing report file or a fork PR's read-only
+  token (`checks: write` denied) never fails the job — the `Run tests` step is
+  the source of truth.
 
 ## Style guidelines
 - Match existing code: plain ES modules in browser, CommonJS in Node, minimal comments,

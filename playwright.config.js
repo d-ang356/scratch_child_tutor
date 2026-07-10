@@ -24,8 +24,17 @@ const DB_PATH = process.env.SCRATCH_DB_PATH || 'test-data/scratch_helper.test.db
 
 module.exports = defineConfig({
   testDir: './tests',
-  // One worker, no parallelism: the tests share a single app instance and (for
-  // @real) a single SQLite DB file. Serial execution keeps scenarios isolated.
+  // Seed the shared SQLite DB once before tests (instead of each spec clearing
+  // it in beforeAll, which would wipe rows out from under other specs). See
+  // tests/support/globalSetup.js.
+  globalSetup: require.resolve('./tests/support/globalSetup'),
+  // workers MUST be 1. The suite shares a single app instance + a single SQLite
+  // DB file + a single preferences.json. It is NOT parallel-safe at workers>1:
+  // initial.spec.js forces the first-run prefs modal by deleting
+  // preferences.json, and another spec saving prefs concurrently recreates the
+  // file before initial's page reads /api/preferences, so the modal never opens
+  // (reproduced ~1/8 at workers=2). Serial execution is race-free. To raise
+  // workers, first decouple initial.spec from the shared preferences.json.
   fullyParallel: false,
   workers: 1,
   forbidOnly: !!process.env.CI,

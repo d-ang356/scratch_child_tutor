@@ -199,44 +199,57 @@ run on a bare push to a feature branch, and there is no `workflow_dispatch`, so
 is a syntax check, not a run. An "Invalid workflow file" message on a feature
 push means the file is malformed, not that the workflow executed.)
 
-### Shards
+### Jobs
 
-CI runs **two independent shards** as two separate jobs, so the real-API tests
-never share Docker resources (volumes / containers / network) with the mock
-tests:
+CI runs **two independent jobs** (mock + real), so the real-API tests never
+share Docker resources (volumes / containers / network) with the mock tests:
 
-| Shard (job) | grep | Compose project | Model default | Runs when |
+| Job | grep | Compose project | Model default | Runs when |
 |--------------|------|-----------------|---------------|----------|
 | `mock-tests` | `@mock` | `scratch-mock` | `glm-5.2` | every PR / push to `main` |
 | `real-api-tests` | `@real` | `scratch-real` | `gpt-oss:20b` | only if `OLLAMA_API_KEY` is set |
 
-- Each shard is its **own job on its own runner** with its own
-  `COMPOSE_PROJECT_NAME` (`scratch-mock` / `scratch-real`). That isolates the
-  `dbdata` / `nm` volumes and `app` / `tests` containers per shard, so the two
-  suites can never collide even if they were ever co-located. Each shard builds
-  and runs its own `docker compose up`.
+- Each job is its **own runner** with its own `COMPOSE_PROJECT_NAME`
+  (`scratch-mock` / `scratch-real`). That isolates the `dbdata` / `nm` volumes
+  and `app` / `tests` containers per job, so the two suites can never collide
+  even if they were ever co-located. Each job builds and runs its own
+  `docker compose up`.
 - The two jobs run in parallel (the real one waits only on `check-secret`).
-- Each shard uploads its own report artifact (`playwright-report-mock` /
+- Each job uploads its own report artifact (`playwright-report-mock` /
   `playwright-report-real`) and posts its own `dorny/test-reporter` check
   ("Mock functional tests" / "Real Ollama API tests").
 
-#### Gating the real shard on the secret (why there is a `check-secret` job)
+> **No internal sharding; `workers: 1` is required.** Each of the two jobs runs
+> as a single Playwright process (no `--shard` matrix) with `workers: 1`
+> (serial). The `@mock` suite is small enough that sharding would multiply the
+> per-shard Docker build + `npm install` overhead for ~0s of savings and leave
+> an empty green shard; re-enable a `--shard k/N` matrix once `@mock` grows past
+> ~10 tests. `workers` must stay 1 regardless: the suite is **not parallel-safe**
+> at `workers>1` — `initial.spec.js` forces the first-run prefs modal by deleting
+> `preferences.json`, and another spec saving prefs concurrently recreates the
+> file before the initial page reads `/api/preferences`, so the modal never
+> opens (reproduced ~1/8 at `workers=2`). Serial execution is race-free. To
+> raise workers later, first decouple `initial.spec` from the shared
+> `preferences.json` (e.g. mock `/api/preferences`).
+
+#### Gating the real job on the secret (why there is a `check-secret` job)
 
 A job-level `if` can read `needs.*.outputs`, `github`, `vars`, etc. — but it
 **cannot** read `secrets` **or `matrix`**. So the obvious
 `if: ${{ secrets.OLLAMA_API_KEY != '' }}` is a silent no-op (the job would never
 run), and a matrix job can't gate a whole leg at the job level either. The fix
-is a tiny `check-secret` job that interpolates the secret into a shell step
-(the only place secrets are reliably readable) and exports `has_key: true|false`
-as a job output. The real shard then gates at the job level with:
+is a tiny `check-secret` job that maps the secret into the step via `env:`
+(secrets are readable in `env`/`run`, not in `if`) and exports
+`has_key: true|false` as a job output. The real job then gates at the job level
+with:
 
 ```yaml
 if: ${{ needs.check-secret.outputs.has_key == 'true' }}
 ```
 
 `needs.*.outputs` *is* allowed in a job-level `if`, so the whole `real-api-tests`
-job is **skipped** (not just its steps) when there is no key. The mock shard has
-no `if` and always runs. (The secret itself is passed to the real shard's
+job is **skipped** (not just its steps) when there is no key. The mock job has
+no `if` and always runs. (The secret itself is passed to the real job's
 `OLLAMA_API_KEY` env, which is the allowed place to use it — `env` can read
 `secrets` even though `if` cannot.)
 
@@ -247,18 +260,23 @@ no `if` and always runs. (The secret itself is passed to the real shard's
 
 > Override the real model with a **repository variable** named `SCRATCH_MODEL`
 > (Settings → Secrets and variables → Actions → Variables), e.g.
-> `gpt-oss:120b`. The mock shard reads `SCRATCH_MODEL` too (default `glm-5.2`),
+> `gpt-oss:120b`. The mock job reads `SCRATCH_MODEL` too (default `glm-5.2`),
 > but it doesn't matter there — `/api/chat` is intercepted.
 
-> Currently the `@real` tests are `test.skip()` placeholders, so the real shard
+> Currently the `@real` tests are `test.skip()` placeholders, so the real job
 > is green with "skipped" until you implement them (see
 > `tests/real/safety.spec.js`).
 
-### What each shard produces
+### What each job produces
 
 - **Pass/fail summary on the run page** — `dorny/test-reporter` reads
   `test-results/junit.xml` and posts a per-test table (passed / failed / skipped
-  / duration) as a check run on the Actions run page.
+  / duration) as a check run on the Actions run page. The step is guarded with
+  `if: always() && hashFiles('test-results/junit.xml') != ''` (so a missing
+  file — e.g. the tests container failed to start — doesn't add a confusing
+  secondary error) and `continue-on-error: true` (so a reporter hiccup, or the
+  `checks: write` permission being unavailable on a **fork PR**, never fails the
+  job — the `Run tests` step is the source of truth).
 - **Downloadable HTML report** — `actions/upload-artifact` uploads
   `playwright-report/` as an artifact (`playwright-report-mock` /
   `playwright-report-real`), retained 14 days. Download it from the run page and
@@ -459,20 +477,37 @@ test('a seeded chat shows up in the history drawer @mock', async ({ page }) => {
 });
 ```
 
-### Example: ensure a clean DB for every test in a file
+### Seeding: use `globalSetup`, not per-spec `clear()`
+
+The shared DB is cleared and seeded **once** before all tests by
+`tests/support/globalSetup.js` (wired via `globalSetup` in `playwright.config.js`).
+Specs should **read** the seed rows and not call `db.clear()` themselves — a
+spec clearing the shared DB wipes rows out from under other specs (and under
+retries). The seed data lives in `tests/utils/testConstants.js`
+(`FULL_CONVERSATION_DATA`, `MEOW_CONVERSATION_DATA`).
 
 ```js
-test.beforeEach(async () => {
+// tests/support/globalSetup.js (runs once per run, before any test)
+const { createFactory } = require('./sqliteFactory');
+const { FULL_CONVERSATION_DATA, MEOW_CONVERSATION_DATA } = require('../utils/testConstants');
+
+module.exports = async function () {
   const db = createFactory().open();
-  db.clear();   // or db.createNew() for a totally fresh file
+  db.clear();
+  db.insertConversation(FULL_CONVERSATION_DATA);
+  db.insertConversation(MEOW_CONVERSATION_DATA);
   db.close();
-});
+};
 ```
 
+> If a test needs its own throwaway chat (e.g. the delete test), insert one with
+> a **unique title** (`Date.now()`) directly into the DB via the factory, use
+> it, and delete it — don't touch the shared seed rows.
+
 > **Concurrency note:** WAL + `busy_timeout` lets the factory and the server
-> share the file. Avoid heavy concurrent writes from both at once. Seeding in
-> `beforeEach` / before the page loads is the safe pattern. Workers are pinned
-> to 1 in `playwright.config.js` for this reason.
+> share the file. Avoid heavy concurrent writes from both at once. Workers are
+> pinned to 1 in `playwright.config.js` — and this is **required**, not just
+> preferred: the suite is not parallel-safe at `workers>1` (see §6).
 
 ---
 
@@ -581,7 +616,10 @@ await page.route('**/api/chat', (route) =>
    > saves the preferences modal if it's open (no `preferences.json` yet, e.g. a
    > fresh CI/Docker runner) and is a no-op otherwise. Skipping it makes a spec
    > hang behind the modal in clean environments. The initial smoke test is the
-   > only one that drives the modal explicitly, because it tests the modal.
+   > only one that drives the modal explicitly, because it tests the modal; it
+   > guarantees a clean first-run state by deleting `preferences.json` in
+   > `beforeEach` (the server reads the file fresh on each `/api/preferences`
+   > GET, so the next page load forces the modal).
 
 4. **Example — a mocked test** (no real Ollama):
 
@@ -755,9 +793,17 @@ await page.route('**/api/chat', (route) =>
   deterministic, so a CI-only failure usually means a selector or timing change.
   Download the `playwright-report-*` artifact and open it; check the trace
   (`trace: 'retain-on-failure'` is on).
-- **`dorny/test-reporter` step fails on a fork PR** — `checks: write` is not
-  available for fork PRs. On your own repo this is fine. The test results
-  themselves are the source of truth (the `Run tests` step).
+- **`dorny/test-reporter` on a fork PR** — `checks: write` is not available for
+  fork PRs. The reporter step has `continue-on-error: true` and a
+  `hashFiles('test-results/junit.xml')` guard, so this no longer fails the job;
+  the `Run tests` step remains the source of truth. On your own repo the
+  reporter posts the per-test summary as normal.
+- **Tests fail intermittently only at `workers>1`** — expected; the suite is
+  not parallel-safe (see §6). `initial.spec.js` deletes `preferences.json` to
+  force the first-run modal, and a concurrent spec saving prefs recreates it
+  before the initial page reads `/api/preferences`, so the modal never opens.
+  Keep `workers: 1`. To raise workers, first decouple `initial.spec` from the
+  shared `preferences.json` (e.g. mock `/api/preferences`).
 - **Cross-container SQLite `database is locked`** — rare; the factory and server
   share the DB with WAL + a 5s busy timeout. If it happens, do factory writes in
   `beforeEach` (before the page loads) rather than mid-test.
@@ -788,16 +834,20 @@ tests/
     ChatHistoryDrawerPage.js    chat history drawer
   support/
     env.js                      baseUrl() / dbPath()
+    globalSetup.js              seeds the shared DB once before all tests
     mockOllama.js               mockChatAnswer / mockChatEmpty
     sqliteFactory.js            clear / reset / createNew / insert* / list / get
+  utils/
+    testConstants.js            shared seed chats (FULL/MEOW) + block markup
   specs/
-    initial.spec.js             @mock initial smoke test
+    initial.spec.js             @mock initial smoke test (first-run modal)
+    newChatAndDeleteChat.spec.js @mock new-chat + delete-chat (self-contained)
   real/
     safety.spec.js              @real safety-gate tests (scaffolded, skipped)
 Dockerfile                      app image (zero-dep, node:22-slim)
-.dockerignore                   keeps the app image small
-docker-compose.yml              app + Playwright containers (shared DB volume)
-.github/workflows/playwright.yml CI: 2 shards (mock always, real gated on OLLAMA_API_KEY via a check-secret job; isolated compose projects)
+.dockerignore                   keeps the app image small (excludes root *.md explicitly, not **/*.md)
+docker-compose.yml              app + Playwright containers (shared DB volume; `expose`, no host port)
+.github/workflows/playwright.yml CI: 2 jobs (mock always, real gated on OLLAMA_API_KEY via check-secret; isolated compose projects; workers=1 serial; concurrency cancels superseded runs; reporter guarded + continue-on-error)
 scripts/test.sh / test.bat      no-Docker local run
 ```
 
@@ -810,7 +860,7 @@ scripts/test.sh / test.bat      no-Docker local run
 | `OLLAMA_BASE` | `https://ollama.com` | Ollama backend |
 | `OLLAMA_API_KEY` | `mock-dummy-key` | Cloud API key (real for `@real`) |
 | `SCRATCH_MODEL` | `glm-5.2` | Model name (no `:cloud` in API mode) |
-| `COMPOSE_PROJECT_NAME` | repo dir name | CI sets `scratch-mock` / `scratch-real` per shard to isolate Docker volumes/containers |
+| `COMPOSE_PROJECT_NAME` | repo dir name | CI sets `scratch-mock` / `scratch-real` per job to isolate Docker volumes/containers |
 | `HOST` | `127.0.0.1` | App bind host (`0.0.0.0` in Docker) |
 | `PORT` | `8787` | App bind port |
 | `SCRATCH_NO_OPEN` | `1` (in tests) | Skip the desktop browser launch |

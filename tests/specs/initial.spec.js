@@ -15,10 +15,29 @@
 // answer streams in.
 
 const { test, expect } = require('@playwright/test');
+const fs = require('fs');
+const path = require('path');
 const { ChatPage } = require('../pages/ChatPage');
 const { PreferencesModalPage } = require('../pages/PreferencesModalPage');
 const { BlocksPanePage } = require('../pages/BlocksPanePage');
 const { mockChatAnswer } = require('../support/mockOllama');
+
+// preferences.json as the app sees it: server.js uses path.join(__dirname,
+// 'preferences.json'), and the app runs from the repo root. Locally the test
+// cwd is the repo root too, so this is the same file. In Docker the app's
+// preferences.json lives in the app container (/app), which is NOT mounted into
+// the tests container — but .dockerignore excludes it, so it is already absent
+// there and this unlink is a harmless no-op.
+const PREFS_PATH = path.join(__dirname, '..', '..', 'preferences.json');
+
+test.beforeEach(async () => {
+  // Guarantee a clean first-run state (no preferences.json) regardless of run
+  // order or a stale file from a prior local run. server.js readPrefs() reads
+  // the file fresh on each /api/preferences GET (no caching), so deleting it
+  // makes the next chat.open() page load force the prefs modal. This is the one
+  // spec that genuinely tests first-run; all other specs use ensureDismissed().
+  try { fs.unlinkSync(PREFS_PATH); } catch (e) { /* already absent — fine */ }
+});
 
 test('initial screen, Ollama connected, suggestion chip starts a chat @mock', async ({ page }) => {
   const chat = new ChatPage(page);

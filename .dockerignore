@@ -9,7 +9,15 @@ playwright.config.js
 .github
 .claude
 scripts
-*.md
+# Exclude only ROOT markdown docs. Do NOT use **/*.md here — Go's
+# filepath.Match treats `*` as not crossing `/`, so a bare `*.md` (and even
+# more so `**/*.md`) would also strip scratchblocks-prompts/system.md, which
+# server.js loads as the tutor system prompt. Losing it silently empties the
+# second safety layer (the app still boots, /api/health stays green, @mock
+# tests still pass — a silent degradation, not a loud failure).
+README.md
+CLAUDE.md
+TESTING.md
 *.db
 *.db-*
 preferences.json

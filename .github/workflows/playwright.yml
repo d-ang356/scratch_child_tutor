@@ -10,7 +10,12 @@ on:
 permissions:
   contents: read
   checks: write
-  actions: read
+
+# Cancel a superseded run on the same ref/event so two quick pushes to main
+# don't run in parallel. Jobs within a single run are not affected.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
 
 jobs:
   # Detect whether the real-API secret is configured. The `secrets` context is
@@ -24,16 +29,29 @@ jobs:
       has_key: ${{ steps.set.outputs.has_key }}
     steps:
       - id: set
+        env:
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
         run: |
-          if [ -n "${{ secrets.OLLAMA_API_KEY }}" ]; then
+          if [ -n "$OLLAMA_API_KEY" ]; then
             echo "has_key=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_key=false" >> "$GITHUB_OUTPUT"
           fi
 
-  # Shard 1 — mock functional tests. Always runs. Its own runner and its own
-  # COMPOSE_PROJECT_NAME (scratch-mock) so its dbdata/nm volumes and app/tests
-  # containers never collide with the real shard.
+  # Shard 1 — mock functional tests. Always runs. Single job, no sharding: the
+  # @mock suite is small (a few tests, ~9s) and the dominant CI cost is the
+  # per-shard Docker build + npm install (~30-60s), so sharding would multiply
+  # that overhead for ~0s of test savings and (at 3 tests) leave an empty green
+  # shard. Re-enable sharding (matrix + `--shard k/N`) once @mock grows past
+  # ~10 tests.
+  #
+  # workers MUST stay 1 (set in playwright.config.js). The suite is NOT
+  # parallel-safe at workers>1: initial.spec.js forces the first-run prefs modal
+  # by deleting preferences.json, and another spec saving prefs concurrently
+  # recreates the file before initial's page reads /api/preferences, so the
+  # modal never opens. Reproduced (~1/8 failures at workers=2). Serial
+  # execution is race-free. To raise workers later, first make initial.spec
+  # independent of the shared preferences.json (e.g. mock /api/preferences).
   mock-tests:
     name: Mock functional tests
     runs-on: ubuntu-latest
@@ -52,8 +70,12 @@ jobs:
         run: docker compose up --abort-on-container-exit --exit-code-from tests --build
 
       - name: Publish pass/fail summary
-        if: always()
+        if: always() && hashFiles('test-results/junit.xml') != ''
         uses: dorny/test-reporter@v1
+        # continue-on-error: reporter needs checks:write, which fork-PR tokens
+        # can't grant; also tolerates any reporter hiccup without failing the
+        # job (the test step already set the run's pass/fail).
+        continue-on-error: true
         with:
           name: Mock functional tests
           path: test-results/junit.xml
@@ -89,8 +111,12 @@ jobs:
         run: docker compose up --abort-on-container-exit --exit-code-from tests --build
 
       - name: Publish pass/fail summary
-        if: always()
+        if: always() && hashFiles('test-results/junit.xml') != ''
         uses: dorny/test-reporter@v1
+        # continue-on-error: reporter needs checks:write, which fork-PR tokens
+        # can't grant; also tolerates any reporter hiccup without failing the
+        # job (the test step already set the run's pass/fail).
+        continue-on-error: true
         with:
           name: Real Ollama API tests
           path: test-results/junit.xml
