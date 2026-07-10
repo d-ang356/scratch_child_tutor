@@ -191,46 +191,59 @@ locally afterward.
 
 ## 6. GitHub Actions CI
 
-Workflow: `.github/workflows/playwright.yml`. It triggers on **every pull
-request** to `main` and on **every push** to `main` (i.e. on merge).
+Workflow: `.github/workflows/playwright.yml`. It triggers on **pull requests**
+targeting `main` and on **pushes** to `main` (i.e. on merge). It does **not**
+run on a bare push to a feature branch, and there is no `workflow_dispatch`, so
+**without opening a PR (or pushing to `main`) the workflow never runs.**
+(GitHub still *validates* the workflow YAML on any push that touches it — that
+is a syntax check, not a run. An "Invalid workflow file" message on a feature
+push means the file is malformed, not that the workflow executed.)
 
 ### Shards
 
-CI runs **two independent shards** via a single matrix job, so the real-API
-tests never share Docker resources (volumes / containers / network) with the
-mock tests:
+CI runs **two independent shards** as two separate jobs, so the real-API tests
+never share Docker resources (volumes / containers / network) with the mock
+tests:
 
-| Shard | grep | Compose project | Model default | Runs when |
-|-------|------|-----------------|---------------|----------|
-| `mock` | `@mock` | `scratch-mock` | `glm-5.2` | every PR / push to `main` |
-| `real` | `@real` | `scratch-real` | `gpt-oss:20b` | only if `OLLAMA_API_KEY` is set |
+| Shard (job) | grep | Compose project | Model default | Runs when |
+|--------------|------|-----------------|---------------|----------|
+| `mock-tests` | `@mock` | `scratch-mock` | `glm-5.2` | every PR / push to `main` |
+| `real-api-tests` | `@real` | `scratch-real` | `gpt-oss:20b` | only if `OLLAMA_API_KEY` is set |
 
-- Each shard is a separate matrix leg on its **own runner**, and each gets its
-  own `COMPOSE_PROJECT_NAME` (`scratch-mock` / `scratch-real`). That isolates the
+- Each shard is its **own job on its own runner** with its own
+  `COMPOSE_PROJECT_NAME` (`scratch-mock` / `scratch-real`). That isolates the
   `dbdata` / `nm` volumes and `app` / `tests` containers per shard, so the two
   suites can never collide even if they were ever co-located. Each shard builds
   and runs its own `docker compose up`.
-- `fail-fast: false` — a failure in one shard does not cancel the other.
+- The two jobs run in parallel (the real one waits only on `check-secret`).
 - Each shard uploads its own report artifact (`playwright-report-mock` /
   `playwright-report-real`) and posts its own `dorny/test-reporter` check
   ("Mock functional tests" / "Real Ollama API tests").
 
 #### Gating the real shard on the secret (why there is a `check-secret` job)
 
-The `secrets` context is **not available in a job-level `if`**, so the obvious
+A job-level `if` can read `needs.*.outputs`, `github`, `vars`, etc. — but it
+**cannot** read `secrets` **or `matrix`**. So the obvious
 `if: ${{ secrets.OLLAMA_API_KEY != '' }}` is a silent no-op (the job would never
-run). Instead a tiny `check-secret` job interpolates the secret into a shell
-step (the only place secrets are reliably readable) and exports
-`has_key: true|false` as a job output. The `tests` matrix then gates with:
+run), and a matrix job can't gate a whole leg at the job level either. The fix
+is a tiny `check-secret` job that interpolates the secret into a shell step
+(the only place secrets are reliably readable) and exports `has_key: true|false`
+as a job output. The real shard then gates at the job level with:
 
 ```yaml
-if: ${{ !matrix.needs-key || needs.check-secret.outputs.has_key == 'true' }}
+if: ${{ needs.check-secret.outputs.has_key == 'true' }}
 ```
 
-`matrix` and `needs.*.outputs` *are* allowed in a job-level `if` — only
-`secrets` is not. The mock shard (`needs-key: false`) always runs; the real
-shard runs only when `has_key` is true. (The secret itself is still passed to
-the real shard's `OLLAMA_API_KEY` env, which is the allowed place to use it.)
+`needs.*.outputs` *is* allowed in a job-level `if`, so the whole `real-api-tests`
+job is **skipped** (not just its steps) when there is no key. The mock shard has
+no `if` and always runs. (The secret itself is passed to the real shard's
+`OLLAMA_API_KEY` env, which is the allowed place to use it — `env` can read
+`secrets` even though `if` cannot.)
+
+> If you ever want to gate per-leg inside a single matrix job instead, put the
+> condition on **each step's** `if` (`matrix` *is* available in step-level
+> `if`), not on the job — and remember the skipped leg's reporter/upload steps
+> need the same guard so they don't run on empty results.
 
 > Override the real model with a **repository variable** named `SCRATCH_MODEL`
 > (Settings → Secrets and variables → Actions → Variables), e.g.

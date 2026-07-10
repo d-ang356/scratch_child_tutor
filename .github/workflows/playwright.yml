@@ -14,10 +14,9 @@ permissions:
 
 jobs:
   # Detect whether the real-API secret is configured. The `secrets` context is
-  # NOT available in a job-level `if`, so we materialize it into an output here
-  # and gate the real shard on that output. Without this, `real-api-tests` would
-  # silently never run (the old `if: ${{ secrets.OLLAMA_API_KEY != '' }}` was a
-  # no-op).
+  # NOT available in a job-level `if` (and neither is `matrix`), so we
+  # materialize the secret into a job output here and gate the real shard on
+  # that output. `needs.*.outputs` IS allowed in a job-level `if`.
   check-secret:
     name: Check for Ollama API key
     runs-on: ubuntu-latest
@@ -32,45 +31,20 @@ jobs:
             echo "has_key=false" >> "$GITHUB_OUTPUT"
           fi
 
-  # Two shards run independently as separate matrix legs, each on its own runner
-  # and with its OWN docker compose project (COMPOSE_PROJECT_NAME) so the dbdata
-  # / nm volumes and app/tests containers never collide — even if two legs ever
-  # shared a runner. The real shard (@real) is gated on the secret.
-  tests:
-    name: ${{ matrix.summary }}
-    needs: check-secret
+  # Shard 1 — mock functional tests. Always runs. Its own runner and its own
+  # COMPOSE_PROJECT_NAME (scratch-mock) so its dbdata/nm volumes and app/tests
+  # containers never collide with the real shard.
+  mock-tests:
+    name: Mock functional tests
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - shard: mock
-            grep: "@mock"
-            project: scratch-mock
-            report-artifact: playwright-report-mock
-            report-name: Mock functional tests
-            summary: Mock functional tests
-            needs-key: false
-          - shard: real
-            grep: "@real"
-            project: scratch-real
-            report-artifact: playwright-report-real
-            report-name: Real Ollama API tests
-            summary: Real Ollama API tests
-            needs-key: true
-    # Mock runs always; real runs only when the key was detected. (matrix and
-    # needs.*.outputs ARE allowed in a job-level if — only `secrets` is not.)
-    if: ${{ !matrix.needs-key || needs.check-secret.outputs.has_key == 'true' }}
     env:
-      # Isolate this shard's compose resources (volumes + containers + network).
-      COMPOSE_PROJECT_NAME: ${{ matrix.project }}
+      COMPOSE_PROJECT_NAME: scratch-mock
       OLLAMA_BASE: https://ollama.com
-      # Mock shard never calls Ollama (/api/chat is intercepted at the browser
-      # boundary); a dummy key just makes /api/health report connected. The real
-      # shard uses the actual secret.
-      OLLAMA_API_KEY: ${{ (matrix.shard == 'real' && secrets.OLLAMA_API_KEY) || 'mock-dummy-key' }}
-      SCRATCH_MODEL: ${{ matrix.shard == 'real' && (vars.SCRATCH_MODEL || 'gpt-oss:20b') || (vars.SCRATCH_MODEL || 'glm-5.2') }}
-      PLAYWRIGHT_ARGS: "--grep ${{ matrix.grep }}"
+      # /api/chat is intercepted at the browser boundary, so no real Ollama call
+      # is made. A dummy key just makes /api/health report connected (cloud mode).
+      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY || 'mock-dummy-key' }}
+      SCRATCH_MODEL: ${{ vars.SCRATCH_MODEL || 'glm-5.2' }}
+      PLAYWRIGHT_ARGS: "--grep @mock"
     steps:
       - uses: actions/checkout@v4
 
@@ -81,7 +55,7 @@ jobs:
         if: always()
         uses: dorny/test-reporter@v1
         with:
-          name: ${{ matrix.report-name }}
+          name: Mock functional tests
           path: test-results/junit.xml
           reporter: java-junit
 
@@ -89,6 +63,43 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.report-artifact }}
+          name: playwright-report-mock
+          path: playwright-report/
+          retention-days: 14
+
+  # Shard 2 — real Ollama API tests. Runs ONLY when the secret is configured.
+  # Gated at the JOB level via the check-secret output (job-level `if` can read
+  # needs.*.outputs but NOT secrets/matrix), so the whole job is skipped — not
+  # just its steps — when there is no key.
+  real-api-tests:
+    name: Real Ollama API tests
+    needs: check-secret
+    runs-on: ubuntu-latest
+    if: ${{ needs.check-secret.outputs.has_key == 'true' }}
+    env:
+      COMPOSE_PROJECT_NAME: scratch-real
+      OLLAMA_BASE: https://ollama.com
+      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+      SCRATCH_MODEL: ${{ vars.SCRATCH_MODEL || 'gpt-oss:20b' }}
+      PLAYWRIGHT_ARGS: "--grep @real"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run tests in containers
+        run: docker compose up --abort-on-container-exit --exit-code-from tests --build
+
+      - name: Publish pass/fail summary
+        if: always()
+        uses: dorny/test-reporter@v1
+        with:
+          name: Real Ollama API tests
+          path: test-results/junit.xml
+          reporter: java-junit
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-real
           path: playwright-report/
           retention-days: 14

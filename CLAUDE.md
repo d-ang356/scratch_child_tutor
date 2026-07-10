@@ -192,16 +192,19 @@ scripts/test.sh / test.bat      no-Docker local test run
   inline in specs. Non-initial specs call `prefs.ensureDismissed()` right after
   `chat.open()` so a missing `preferences.json` (fresh CI/Docker) doesn't block
   the test; the initial smoke test drives the modal explicitly.
-- CI runs **two shards** via a matrix job: `mock` (always) and `real` (gated on
-  `OLLAMA_API_KEY`). Each shard is a separate matrix leg on its own runner with
-  its own `COMPOSE_PROJECT_NAME` (`scratch-mock` / `scratch-real`) so the
-  `dbdata`/`nm` volumes and `app`/`tests` containers never collide between
-  shards; `fail-fast: false`. The real shard is gated through a `check-secret`
-  job because a job-level `if` cannot read the `secrets` context — the secret is
-  materialized into a job output first, then `if: ${{ !matrix.needs-key ||
-  needs.check-secret.outputs.has_key == 'true' }}` decides. CI reports: HTML
-  report uploaded as an artifact (one per shard); JUnit XML →
-  `dorny/test-reporter` posts a pass/fail summary on the workflow run.
+- CI runs **two shards** as two separate jobs: `mock-tests` (always) and
+  `real-api-tests` (gated on `OLLAMA_API_KEY`). Each is its own job on its own
+  runner with its own `COMPOSE_PROJECT_NAME` (`scratch-mock` / `scratch-real`)
+  so the `dbdata`/`nm` volumes and `app`/`tests` containers never collide
+  between shards. The real shard is gated through a `check-secret` job because a
+  job-level `if` can read `needs.*.outputs` but **not** `secrets` **or
+  `matrix`** — the secret is materialized into a job output, then
+  `if: ${{ needs.check-secret.outputs.has_key == 'true' }}` skips the whole real
+  job when there is no key. (Triggers are `pull_request` to `main` and `push` to
+  `main` only — no `workflow_dispatch` — so the workflow never runs without a
+  PR or a push to `main`; a feature-branch push only triggers YAML validation,
+  not a run.) CI reports: HTML report uploaded as an artifact (one per shard);
+  JUnit XML → `dorny/test-reporter` posts a pass/fail summary on the run.
 
 ## Style guidelines
 - Match existing code: plain ES modules in browser, CommonJS in Node, minimal comments,
