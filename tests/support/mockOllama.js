@@ -97,4 +97,42 @@ async function mockChatEmpty(page, opts = {}) {
   await page.route('**/api/chat', (route) => fulfillSSE(route, body));
 }
 
-module.exports = { mockChatAnswer, mockChatSequence, mockChatEmpty, SCRATCH_ANSWER };
+
+// Intercept GET /api/health with a canned JSON payload so a @mock test can drive
+// the UI's health-state branches deterministically. /api/health is a plain JSON
+// endpoint (the client does `await res.json()`), NOT an SSE stream — the body
+// must be JSON. Wrapping it in the SSE `data:` line makes res.json() throw,
+// which routes EVERY call into checkHealth's catch ("server problem") branch and
+// defeats the test (every error test would silently test the same path).
+//
+// The client (checkHealth in app.js) branches on ollamaUp + modelAvailable only
+// (the `ok` field is sent for shape parity with the real server response but is
+// NOT read by the client):
+//   ollamaUp && modelAvailable  -> green   (dot ok),  "Ollama ready",     input ENABLED
+//   ollamaUp && !modelAvailable -> neutral (dot),     "model not listed",  input ENABLED
+//   !ollamaUp                   -> red     (dot bad), "not reachable",    input DISABLED, retry
+// To exercise the fourth branch — fetch failure ("Helper server problem") — do
+// NOT use this helper; abort the route instead:
+//   await page.route('**/api/health', (r) => r.abort('failed'));
+//
+// Design rule: the OK/connected state is NOT mocked here — it stays real in the
+// initial smoke test (expectOllamaConnected hits the actual /api/health). Mock
+// /api/health ONLY for the error branches the real suite can't reach
+// deterministically (you can't reliably make Ollama "down" or "model missing" in
+// CI). See tests/specs/ollamaConnectionErrors.spec.js.
+async function mockOllamaHealthCheck(page, ollamaUp, modelAvailable) {
+  const body = JSON.stringify({
+    ok: ollamaUp,
+    ollamaUp,
+    model: 'glm-5.2',
+    modelAvailable,
+  });
+  await page.route('**/api/health', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    headers: { 'Cache-Control': 'no-store' },
+    body,
+  }));
+}
+
+module.exports = { mockChatAnswer, mockChatSequence, mockChatEmpty, SCRATCH_ANSWER, mockOllamaHealthCheck };

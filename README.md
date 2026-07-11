@@ -132,7 +132,12 @@ scripts\test.bat         # Windows
 Playwright's `webServer` (see `playwright.config.js`) starts the app itself on
 `http://127.0.0.1:8787`, so you don't run `npm start` separately. The mocked
 suite (`@mock`) intercepts `/api/chat` at the browser boundary, so **no real
-Ollama call is made** and no API key is needed. Run only the mock suite:
+Ollama call is made** and no API key is needed. The **OK / connected** health
+state is **not** mocked — `initial.spec.js` verifies it against the real
+`/api/health`; only the **error** states (Ollama down, model missing, fetch fail)
+are mocked in `ollamaConnectionErrors.spec.js`, to check the UI reacts
+accordingly (red/neutral dot, composer enabled vs disabled). Run only the mock
+suite:
 ```
 npm run test:mock
 ```
@@ -176,6 +181,7 @@ tests/
   specs/gender.spec.js        @mock gender preference round-trip
   specs/followupBlocks.spec.js @mock follow-up -> 2nd block tab + ↖ jump-to-message; 20-tab arrow-scroll
   specs/splashLogo.spec.js    @mock splash logo matches saved language (no EN flash on BG refresh)
+  specs/ollamaConnectionErrors.spec.js @mock /api/health error branches (down / model missing / fetch fail) -> UI reacts; OK state NOT mocked
   real/safety.spec.js         @real safety-gate test (off-topic -> refusal)
 Dockerfile                    app image (zero-dep)
 docker-compose.yml            app + Playwright containers (shared DB volume)

@@ -141,13 +141,14 @@ start.bat / start.sh            Launchers
 playwright.config.js            Playwright config (webServer, reporters, projects)
 tests/
   pages/                        page objects (Base/Chat/BlocksPane/Preferences/ChatHistory)
-  support/                      mockOllama (route interception: mockChatAnswer / mockChatSequence / mockChatEmpty), sqliteFactory, env, globalSetup (seeds DB once)
+  support/                      mockOllama (route interception: mockChatAnswer / mockChatSequence / mockChatEmpty / mockOllamaHealthCheck), sqliteFactory, env, globalSetup (seeds DB once)
   utils/testConstants.js        shared seed chats (FULL/MEOW) + follow-up answers/questions + 20-tab builder + OFFTOPIC_QUESTION
   specs/initial.spec.js         @mock initial smoke test (first-run modal; deletes preferences.json in beforeEach)
   specs/newChatAndDeleteChat.spec.js @mock new-chat + delete-chat (delete is self-contained)
   specs/gender.spec.js          @mock gender preference round-trip
   specs/followupBlocks.spec.js  @mock follow-up -> 2nd block tab + ↖ jump-to-message (fresh + seeded chat); 20-tab arrow-scroll test
   specs/splashLogo.spec.js      @mock served index.html splash logo matches saved language (no EN flash on BG refresh)
+  specs/ollamaConnectionErrors.spec.js @mock /api/health error branches (Ollama down / model missing / fetch fail) -> UI reacts (dot + composer enable/disable); OK state NOT mocked
   real/safety.spec.js           @real safety-gate test (off-topic -> refusal; gated on key)
 Dockerfile                      app image (zero-dep, node:22-slim)
 docker-compose.yml              scratch-app + official Playwright container (shared DB + preferences volume; `expose`, no host port)
@@ -237,10 +238,19 @@ scripts/test.sh / test.bat      no-Docker local test run
 - Two test groups, selected by tag in the test title:
   - **`@mock`** — `page.route('**/api/chat', fulfill)` short-circuits at the
     browser→server boundary, so the server classifier + Ollama call **never
-    run**. Deterministic, free, no secret. `/api/health` is NOT intercepted, so
-    "Ollama connected" is still verified (green in cloud mode whenever a key —
-    even the `mock-dummy-key` default — is set). The initial smoke test lives
-    here. Do NOT mock `/api/health` — that would defeat the connection check.
+    run**. Deterministic, free, no secret. The **OK / connected** health state is
+    NOT mocked: the initial smoke test calls `expectOllamaConnected()` against the
+    real `/api/health`, so "Ollama connected" is still verified (green in cloud
+    mode whenever a key — even the `mock-dummy-key` default — is set). The
+    **error** health states ARE mocked — in `ollamaConnectionErrors.spec.js`,
+    `mockOllamaHealthCheck` (and `route.abort('failed')` for the fetch-failure
+    branch) drive the UI's `checkHealth` branches that can't be reproduced
+    deterministically against a real backend (Ollama down, model missing, fetch
+    fail) and assert the UI reacts accordingly (red/neutral dot + composer
+    enabled vs disabled). Principle: **don't mock the thing you're verifying is
+    real** — mock only to reach error states you can't trigger otherwise. So the
+    rule "do not mock `/api/health`" is scoped to the connected-state tests, not
+    a blanket ban; the error-state spec is the deliberate exception.
   - **`@real`** — no interception; the full server→Ollama path runs. Needs a
     real `OLLAMA_API_KEY`. Used for the safety gate: Scratch question → answer +
     blocks; off-topic → neither. CI runs these only when the secret is set.

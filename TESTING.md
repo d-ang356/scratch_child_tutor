@@ -37,9 +37,14 @@ There are **two groups of tests**, selected by a tag in the test title:
 > **Why `@mock` is deterministic.** `page.route('**/api/chat', route => route.fulfill(...))`
 > fulfills the request at the **browser boundary**. The fetch never hits the
 > Node server, so there is no classifier round-trip and no Ollama inference.
-> The `/api/health` endpoint is intentionally **not** mocked, so "Ollama is
-> connected" is still verified for real (in cloud mode it is green whenever a
-> key — even the dummy `mock-dummy-key` — is set).
+> The **OK / connected** health state is intentionally **not** mocked, so
+> "Ollama is connected" is still verified for real (in cloud mode it is green
+> whenever a key — even the dummy `mock-dummy-key` — is set) — the initial
+> smoke test calls `expectOllamaConnected()` against the real `/api/health`.
+> The **error** health states (Ollama down, model missing, fetch fail) **are**
+> mocked — see `mockOllamaHealthCheck` in §9 and `ollamaConnectionErrors.spec.js`.
+> Principle: don't mock the thing you're verifying is real; mock only to reach
+> error states you can't trigger deterministically against a real backend.
 
 The app itself stays **zero-dependency**. Playwright is a **dev-only** dependency
 (`@playwright/test` in `package.json`); normal users who just run
@@ -358,8 +363,9 @@ class MyPage extends BasePage {
 | `thinkingIndicator()` | the `.thinking` div in the last assistant bubble — the "🤔 Thinking…" state the model shows on send, before any content arrives |
 | `expectThinking(timeout?)` | asserts the model is currently in the thinking state (the indicator is visible). Needs a **held** mock or the indicator is replaced too fast to observe — see §9 |
 | `expectWelcomeVisible()` | waits for the welcome card |
-| `expectOllamaConnected(timeout?)` | waits for the dot to gain class `ok` |
-| `expectOllamaDisconnected(timeout?)` | waits for class `bad` |
+| `expectOllamaConnected(timeout?)` | waits for the dot to gain class `ok` (real `/api/health`, not mocked) |
+| `expectOllamaDisconnected(timeout?)` | waits for class `bad` (red dot — covers both the "Ollama down" `else` branch and the "server problem" `catch` branch of `checkHealth`) |
+| `expectOllamaModelIssue(timeout?)` | waits for the model-missing state: neutral dot (neither `ok` nor `bad`) AND `#statusText` contains the model name. The model-name check pins the branch (the transient "checking" state is also neutral but doesn't name the model). Language-independent |
 | `clickExample(i)` | clicks suggestion chip `i` (this sends the question) |
 | `fillQuestion(text)`, `send()` | type a question and click Send |
 | `startNewChat()` | click "New chat" |
@@ -624,14 +630,60 @@ const { mockChatEmpty } = require('../support/mockOllama');
 await mockChatEmpty(page);
 ```
 
+### `mockOllamaHealthCheck(page, ollamaUp, modelAvailable)`
+
+Fulfills `GET /api/health` with a canned **JSON** payload (NOT SSE — `/api/health`
+is a plain JSON endpoint the client reads with `await res.json()`), so a `@mock`
+test can drive the UI's `checkHealth` branches deterministically. The client
+branches on `ollamaUp` + `modelAvailable` (the `ok` field is sent for shape
+parity but is not read):
+
+| `ollamaUp` | `modelAvailable` | UI reaction |
+|---|---|---|
+| `true` | `true` | green dot (`ok`), "Ollama ready", composer **enabled** — the OK state, **not mocked** (covered for real in `initial.spec.js`) |
+| `true` | `false` | neutral dot, "model not listed", composer **enabled** |
+| `false` | _ | red dot (`bad`), "not reachable", composer **disabled**, 5 s retry |
+
+```js
+const { mockOllamaHealthCheck } = require('../support/mockOllama');
+await mockOllamaHealthCheck(page, false, false);   // Ollama down  -> red dot, disabled
+await mockOllamaHealthCheck(page, true, false);    // model missing -> neutral dot, enabled
+```
+
+The **fourth branch** — fetch failure ("Helper server problem", red dot, disabled)
+— is reached when `fetch('/api/health')` rejects (the `catch` in `checkHealth`).
+Don't use the helper for it; abort the route instead:
+
+```js
+await page.route('**/api/health', (route) => route.abort('failed'));
+```
+
+> **Register the route BEFORE `chat.open()`.** `checkHealth` runs during boot
+> (inside `bootReady = Promise.allSettled([checkHealth(), ...])`), so the route
+> must be in place before navigation. `allSettled` means a rejected/aborted health
+> fetch still settles and the loading splash clears normally — `chat.open()` won't
+> hang. The down/server branches schedule a 5 s retry that re-runs `checkHealth`;
+> the route persists, so retries get the same canned state (keep tests short, but
+> a retry firing mid-test is harmless).
+
+> **Design rule — OK is not mocked, errors are.** The connected (green) state is
+> verified for real by `initial.spec.js` → `expectOllamaConnected()` against the
+> actual `/api/health`. Mock `/api/health` ONLY for the error branches you can't
+> trigger deterministically against a real backend (Ollama down, model missing,
+> fetch fail) — that's what `ollamaConnectionErrors.spec.js` does, and it also
+> asserts the **behavioral** consequence (composer enabled vs disabled), not just
+> the dot colour. Don't mock the thing you're verifying is real.
+
 ### Important: what is and isn't mocked
 
 - **Mocked:** `POST /api/chat` (the browser fetch). The server never sees it, so
-  the classifier and Ollama never run.
-- **Not mocked:** `GET /api/health`, `GET/POST /api/chats`, `/api/chats/:id`,
-  `/api/chats/:id/messages`, `/api/preferences`. These hit the real server and
-  the real SQLite DB. That's intentional — persistence and health are part of
-  what the tests verify.
+  the classifier and Ollama never run. `GET /api/health` is mocked **only** in
+  `ollamaConnectionErrors.spec.js` and only for the error branches — the OK state
+  stays real (see `mockOllamaHealthCheck` above).
+- **Not mocked (otherwise):** `GET /api/health` (OK state), `GET/POST /api/chats`,
+  `/api/chats/:id`, `/api/chats/:id/messages`, `/api/preferences`. These hit the
+  real server and the real SQLite DB. That's intentional — persistence and the
+  connected health state are part of what the tests verify.
 
 ### Writing your own canned answer
 
@@ -912,16 +964,17 @@ tests/
   support/
     env.js                      baseUrl() / dbPath() / prefsPath()
     globalSetup.js              seeds the shared DB once before all tests
-    mockOllama.js               mockChatAnswer / mockChatSequence / mockChatEmpty
+    mockOllama.js               mockChatAnswer / mockChatSequence / mockChatEmpty / mockOllamaHealthCheck
     sqliteFactory.js            clear / reset / createNew / insert* / list / get
   utils/
     testConstants.js            shared seed chats (FULL/MEOW) + follow-up answers/questions + 20-tab builder + OFFTOPIC_QUESTION
   specs/
-    initial.spec.js             @mock initial smoke test (first-run modal)
+    initial.spec.js             @mock initial smoke test (first-run modal; real /api/health green state)
     newChatAndDeleteChat.spec.js @mock new-chat + delete-chat (self-contained)
     gender.spec.js              @mock gender preference round-trip (persist + reload)
     followupBlocks.spec.js      @mock follow-up -> 2nd block tab + ↖ jump-to-message (fresh + seeded chat); 20-tab arrow-scroll test
     splashLogo.spec.js          @mock served index.html splash logo matches saved language (no EN flash on BG refresh)
+    ollamaConnectionErrors.spec.js @mock /api/health error branches (down / model-missing / fetch-fail) -> UI reacts (dot + composer enable/disable); OK state NOT mocked
   real/
     safety.spec.js              @real safety-gate test (off-topic -> refusal; gated on key)
 Dockerfile                      app image (zero-dep, node:22-slim)

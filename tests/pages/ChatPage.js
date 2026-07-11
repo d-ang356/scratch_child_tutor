@@ -72,6 +72,18 @@ class ChatPage extends BasePage {
     await expect(this.statusDot).toHaveClass(/(^|\s)bad(\s|$)/, { timeout });
   }
 
+  // Model-missing branch: the dot is neutral (class "dot" — neither "ok" nor
+  // "bad") and the status line names the missing model. The model name in the
+  // status text is what pins this branch: the transient "checking" state also
+  // leaves the dot neutral but does NOT put the model name in the status line,
+  // and the green/down/server states don't either. Language-independent (the
+  // model string is inserted into both EN and BG status text).
+  async expectOllamaModelIssue(timeout = 15000) {
+    await expect(this.statusDot).not.toHaveClass(/(^|\s)ok(\s|$)/, { timeout });
+    await expect(this.statusDot).not.toHaveClass(/(^|\s)bad(\s|$)/, { timeout });
+    await expect(this.statusText).toContainText('glm-5.2', { timeout });
+  }
+
   async clickExample(index) {
     await this.exampleItems().nth(index).click();
   }
