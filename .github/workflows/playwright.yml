@@ -38,6 +38,24 @@ jobs:
             echo "has_key=false" >> "$GITHUB_OUTPUT"
           fi
 
+  # Lint — a SINGLE job, runs on every PR/push to main (no secret needed). Both
+  # test shards depend on it (needs: lint), so a syntax error fails the whole
+  # pipeline fast and cheaply — before either shard pays for a Docker build.
+  # Zero-dependency: `node --check` across every project JS file via
+  # scripts/lint.js (built-ins only, no `npm install`), so this job needs no
+  # deps install either. Runs in parallel with check-secret.
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Lint
+        run: node scripts/lint.js
+
   # Shard 1 — mock functional tests. Always runs. Single job, no sharding: the
   # @mock suite is small (a few tests, ~9s) and the dominant CI cost is the
   # per-shard Docker build + npm install (~30-60s), so sharding would multiply
@@ -54,6 +72,7 @@ jobs:
   # independent of the shared preferences.json (e.g. mock /api/preferences).
   mock-tests:
     name: Mock functional tests
+    needs: lint
     runs-on: ubuntu-latest
     env:
       COMPOSE_PROJECT_NAME: scratch-mock
@@ -95,7 +114,7 @@ jobs:
   # just its steps — when there is no key.
   real-api-tests:
     name: Real Ollama API tests
-    needs: check-secret
+    needs: [check-secret, lint]
     runs-on: ubuntu-latest
     if: ${{ needs.check-secret.outputs.has_key == 'true' }}
     env:

@@ -9,6 +9,7 @@ const { ChatHistoryDrawerPage} = require('../pages/ChatHistoryDrawerPage');
 
 const { createFactory } = require('../support/sqliteFactory');
 const { FULL_CONVERSATION_DATA } = require('../utils/testConstants');
+const { mockChatAnswer } = require('../support/mockOllama');
 
 // Serial within this file: the tests share one app + one SQLite DB. The DB is
 // seeded once by globalSetup (not cleared per spec), so tests must not run in
@@ -81,4 +82,46 @@ test('user can delete a chat @mock', async ({ page }) => {
   await expect(chatHistory.rowByTitle(throwaway.title)).toBeVisible();
   await chatHistory.deleteChatByTitle(throwaway.title);
   await expect(chatHistory.rowByTitle(throwaway.title)).toHaveCount(0);
+});
+
+test('starting a new chat mid-stream aborts it and resets the UI @mock', async ({ page }) => {
+  const chat = new ChatPage(page);
+  const prefs = new PreferencesModalPage(page);
+  const blocks = new BlocksPanePage(page);
+
+  await chat.open();
+  await prefs.ensureDismissed();
+  await chat.expectOllamaConnected();
+
+  // Held mock: /api/chat never fulfills, so the UI sits in the "Thinking…"
+  // state — the condition under which a child might click "New chat" to give up
+  // and start over. startNewChat() aborts the in-flight fetch (AbortController),
+  // then wipes #messages and shows the welcome card. The aborted sendChat's
+  // catch renders "(stopped)" into the now-DETACHED assistant bubble (the
+  // welcome rebuild dropped it from the DOM), so it never appears visibly; what
+  // matters is the UI is cleanly reset and the composer is re-enabled.
+  const { release } = await mockChatAnswer(page, { hold: true });
+
+  await chat.fillQuestion('How do I make the cat walk?');
+  await chat.send();
+  await chat.expectThinking();
+
+  await chat.startNewChat();
+
+  // The welcome card is back (and the thinking indicator is gone with the
+  // wiped #messages).
+  await chat.expectWelcomeVisible();
+  await expect(chat.thinkingIndicator()).toHaveCount(0);
+  // No tabs, friendly empty state.
+  await expect(blocks.tabs()).toHaveCount(0);
+  await expect(blocks.blocksEmpty).toBeVisible();
+  // The composer is cleared and re-enabled (finishStream via the abort finally;
+  // startNewChat also resets the input).
+  await expect(chat.input).toHaveValue('');
+  await expect(chat.sendBtn).toBeEnabled();
+  await expect(chat.input).toBeEnabled();
+
+  // Intentionally never released — the held route is orphaned by the abort and
+  // discarded on page close. Void the binding so the linter doesn't flag it.
+  void release;
 });

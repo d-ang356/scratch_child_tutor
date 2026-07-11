@@ -21,6 +21,9 @@ class ChatPage extends BasePage {
   get statusDot() { return this.loc('#statusDot'); }
   get statusText() { return this.loc('#statusText'); }
   get newChatBtn() { return this.loc('#newChatBtn'); }
+  // The "Chats" / "Чатове" top-bar button. data-i18n="chats" -> applyI18n swaps
+  // its textContent on a language change, so it's a stable language probe.
+  get chatsBtn() { return this.loc('#chatsBtn'); }
 
   // Navigate to the app and wait for the loading splash (#splash) to leave the
   // layout before returning. The splash is shown on every open/refresh for
@@ -93,6 +96,17 @@ class ChatPage extends BasePage {
   }
 
   async send() {
+    await this.sendBtn.click();
+  }
+
+  // While a response is streaming, the Send button becomes the Stop button
+  // (app.js send() sets sendBtn.textContent = t("stop"); enableInput(false)
+  // keeps sendBtn ENABLED so it can be clicked to abort). Clicking it fires the
+  // composer submit handler's `if (streaming) { abortCtrl.abort(); return; }`
+  // branch, which aborts the in-flight fetch via AbortController -> AbortError,
+  // so send()'s catch renders the "(stopped)" / "(спряно)" marker. Same button
+  // element as Send — just a different label and action while streaming.
+  async stop() {
     await this.sendBtn.click();
   }
 

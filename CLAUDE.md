@@ -9,6 +9,31 @@ The browser sends questions to a small Node proxy; the model answers in English 
 Bulgarian, explains the steps on the left, and draws the actual Scratch blocks on the
 right with scratchblocks.
 
+## Regulatory & data posture
+This is a **personal, open-source (MIT), non-commercial, local-first** project and
+a **work in progress**. These properties are load-bearing for its regulatory
+posture (EU AI Act Art 2(12) open-source exemption; Art 3(10) "commercial
+activity" gate on "making available on the market") — preserve them:
+- **No training, no retention by the app.** The Node process runs on the user's
+  machine; the only network egress is to the Ollama backend the deployer
+  configured. The author runs no hosted service and sees/stores no data.
+- **Local model is the recommended setup**, especially for a child — with a
+  purely local model nothing leaves the machine. `gemma4:e4b` is the suggested
+  default for a typical laptop/home PC; `gemma3:4b` / `gemma3n:e4b` are lighter.
+- **Cloud is the deployer's choice and responsibility.** With a `:cloud` model
+  conversations go to Ollama Cloud for inference; whether Ollama logs/retains
+  them is the provider's policy, not this app's. The README "Disclaimer" shifts
+  responsibility to the cloner/deployer (they become a deployer using it
+  personally for their own children) — keep that wording.
+- **User-facing AI/cloud disclaimers are surfaced in the UI** and must not be
+  removed without a replacement: the welcome-screen `welcomeDisclaimer` i18n
+  string ("AI can make mistakes / Scratch 3.0 only"), and the preferences-modal
+  `prefsParentNote` ("ask a parent before using cloud; local keeps everything on
+  this computer"). The short `subtitle` stays in the header; the long disclaimer
+  lives in the welcome card (before the first chat), not the header.
+This is project context, not legal advice. Keep the README's "Privacy & data" +
+"Disclaimer" sections consistent with these points.
+
 ## Architecture
 - `server.js` — zero-dependency Node HTTP server.
   - Serves `public/` static files (+ `/img/` from the repo-root `img/` dir).
@@ -36,6 +61,20 @@ right with scratchblocks.
     classifier call refuses non-Scratch/non-robotics questions before the tutor
     ever sees them. It feeds the classifier **only the latest user message**
     (not the whole history) — see performance note below.
+  - **Security hardening:** sends a strict CSP (`default-src 'self'`;
+    `script-src 'self'` — scratchblocks has no `eval`/`new Function`, verified;
+    `style-src 'self' 'unsafe-inline'` because scratchblocks builds SVG with
+    inline styles; `connect-src 'self'`; `frame-ancestors 'none'`) plus
+    `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
+    `X-Frame-Options: DENY` on every response. `decodeURIComponent` on the
+    static-file path and on `/api/chats/:id` is wrapped in try/catch — a
+    malformed `%`-sequence throws `URIError` (reachable via a no-cors fetch from
+    any page) that would otherwise crash the process via `uncaughtException`;
+    it now returns 400. Request bodies (`readBody`) and the chat accumulator
+    are capped at 1 MiB (413 + `req.destroy()` on overflow). The Docker image
+    runs as the non-root `node` user with a node-owned `/data` volume (see
+    Dockerfile). Do NOT weaken the CSP (e.g. adding `'unsafe-inline'` to
+    `script-src`) without re-verifying scratchblocks has no eval.
 - `public/app.js` — streaming frontend with i18n, preferences modal, chat drawer,
   right-pane block sub-tabs (one tab per assistant answer that contains blocks),
   and a hover “↖” icon under each tab that scrolls to the matching chat message.
@@ -140,20 +179,25 @@ scratchblocks-prompts/system.md Tutor system prompt (bilingual + safety)
 start.bat / start.sh            Launchers
 playwright.config.js            Playwright config (webServer, reporters, projects)
 tests/
-  pages/                        page objects (Base/Chat/BlocksPane/Preferences/ChatHistory)
-  support/                      mockOllama (route interception: mockChatAnswer / mockChatSequence / mockChatEmpty / mockOllamaHealthCheck), sqliteFactory, env, globalSetup (seeds DB once)
+  pages/                        page objects (Base/Chat/BlocksPane/Preferences/ChatHistory). ChatPage.chatsBtn is the data-i18n="chats" language probe used by languageChange.spec.
+  support/                      mockOllama (route interception: mockChatAnswer / mockChatSequence / mockChatEmpty / mockChatDrop / mockChatPartialThenHold / mockOllamaHealthCheck), sqliteFactory, env, globalSetup (seeds DB once)
   utils/testConstants.js        shared seed chats (FULL/MEOW) + follow-up answers/questions + 20-tab builder + OFFTOPIC_QUESTION
-  specs/initial.spec.js         @mock initial smoke test (first-run modal; deletes preferences.json in beforeEach)
-  specs/newChatAndDeleteChat.spec.js @mock new-chat + delete-chat (delete is self-contained)
+  specs/initial.spec.js         @mock initial smoke test (first-run modal; deletes preferences.json in beforeEach) + first-run-modal-cannot-be-dismissed-until-saved guard + age-input (cap 17 / filter non-digits / reject empty)
+  specs/newChatAndDeleteChat.spec.js @mock new-chat + delete-chat (delete is self-contained) + new-chat-mid-stream abort (held mock -> Start new chat -> welcome, 0 tabs, composer re-enabled)
   specs/gender.spec.js          @mock gender preference round-trip
-  specs/followupBlocks.spec.js  @mock follow-up -> 2nd block tab + ↖ jump-to-message (fresh + seeded chat); 20-tab arrow-scroll test
+  specs/followupBlocks.spec.js  @mock follow-up -> 2nd block tab + ↖ jump-to-message (fresh + seeded chat); 20-tab arrow-scroll test; tab-strip keyboard nav (Arrow/Home/End roving tabindex)
   specs/splashLogo.spec.js      @mock served index.html splash logo matches saved language (no EN flash on BG refresh)
-  specs/ollamaConnectionErrors.spec.js @mock /api/health error branches (Ollama down / model missing / fetch fail) -> UI reacts (dot + composer enable/disable); OK state NOT mocked
+  specs/ollamaConnectionErrors.spec.js @mock /api/health error branches (Ollama down / model missing / fetch fail) -> UI reacts (dot + composer enable/disable); OK state NOT mocked; + chat-drops-mid-thinking (health stays green, chat shows error) + chat HTTP-error (502 -> ollamaFail, composer re-enabled)
+  specs/stopButton.spec.js      @mock Stop button aborts the stream -> "(stopped)" marker + composer re-enabled (health stays green); + Stop-with-partial-content (mockChatPartialThenHold: prose kept, (stopped), partial fence -> 1 tab, no connLost)
+  specs/emptyAnswers.spec.js    @mock empty/no-blocks finalize paths: no content -> noAnswer2; reasoning-only -> noAnswer; prose-no-fence -> no tab + blocksEmpty
+  specs/persistence.spec.js     @mock mocked answer persists across reload; reload -> drawer -> open by title -> assistant msg + tab rebuilt from DB
+  specs/languageChange.spec.js  @mock language switching via prefs modal (EN "Chats" -> BG "Чатове" -> reload persists -> back to EN); deletes preferences.json in beforeEach for a deterministic EN start
   real/safety.spec.js           @real safety-gate test (off-topic -> refusal; gated on key)
-Dockerfile                      app image (zero-dep, node:22-slim)
+Dockerfile                      app image (zero-dep, node:22-slim, non-root USER node, /data volume owned by node)
 docker-compose.yml              scratch-app + official Playwright container (shared DB + preferences volume; `expose`, no host port)
-.github/workflows/playwright.yml CI: 2 jobs (mock always, real gated on OLLAMA_API_KEY via check-secret; isolated compose projects; workers=1 serial; concurrency cancels superseded runs; reporter guarded + continue-on-error)
+.github/workflows/playwright.yml CI: lint job + 2 test jobs (mock always, real gated on OLLAMA_API_KEY via check-secret; isolated compose projects; workers=1 serial; concurrency cancels superseded runs; reporter guarded + continue-on-error)
 scripts/test.sh / test.bat      no-Docker local test run
+scripts/lint.js                 zero-dep lint (`node --check` syntax pass + warning pass: eval/new Function, loose ==/!=; + package.json no-`dependencies` invariant + git local-data guard; `npm run lint`, runs in CI before tests)
 ```
 
 ## Git / local data
@@ -247,15 +291,27 @@ scripts/test.sh / test.bat      no-Docker local test run
     branch) drive the UI's `checkHealth` branches that can't be reproduced
     deterministically against a real backend (Ollama down, model missing, fetch
     fail) and assert the UI reacts accordingly (red/neutral dot + composer
-    enabled vs disabled). Principle: **don't mock the thing you're verifying is
-    real** — mock only to reach error states you can't trigger otherwise. So the
-    rule "do not mock `/api/health`" is scoped to the connected-state tests, not
-    a blanket ban; the error-state spec is the deliberate exception.
+    enabled vs disabled). The same spec also covers a chat whose `/api/chat`
+    connection **drops mid-thinking** via `mockChatDrop` (hold → `route.abort`):
+    health is NOT mocked there, so the dot stays green while the chat answer
+    becomes an error and the composer is re-enabled — the drop is on the chat
+    path, not the health path. Principle: **don't mock the thing you're
+    verifying is real** — mock only to reach error states you can't trigger
+    otherwise. So the rule "do not mock `/api/health`" is scoped to the
+    connected-state tests, not a blanket ban; the error-state spec is the
+    deliberate exception.
   - **`@real`** — no interception; the full server→Ollama path runs. Needs a
     real `OLLAMA_API_KEY`. Used for the safety gate: Scratch question → answer +
     blocks; off-topic → neither. CI runs these only when the secret is set.
 - `playwright.config.js` `webServer` auto-starts the app for no-Docker local
-  runs and **reuses** the app container for Docker/CI runs (via `BASE_URL`).
+  runs (with the throwaway `test-data/` env — `SCRATCH_DB_PATH` /
+  `SCRATCH_PREFS_PATH` — so it NEVER touches your real repo-root
+  `preferences.json` / `scratch_helper.db`) and **reuses** the app container for
+  Docker/CI runs (via `BASE_URL`). Locally `reuseExistingServer` is OFF: Playwright
+  owns the server lifecycle and tears it down after, and a stale server on 8787
+  makes the launch fail loudly instead of silently reusing it (which used to
+  clobber real data over HTTP). `reuseExistingServer` is ON only in Docker/CI
+  (`IS_DOCKER` = non-default `BASE_URL`), where the app runs in its own container.
   `globalSetup` (`tests/support/globalSetup.js`) clears + seeds the shared DB
   once before all tests; specs read the seed rows and must NOT call `db.clear()`
   themselves (that wipes rows out from under other specs/retries). `workers=1`
@@ -283,7 +339,14 @@ scripts/test.sh / test.bat      no-Docker local test run
   on reload). Non-initial specs call `prefs.ensureDismissed()` right after
   `chat.open()` so a missing `preferences.json` (fresh CI/Docker) doesn't block
   the test; the initial smoke test drives the modal explicitly.
-- CI runs **two jobs**: `mock-tests` (always) and `real-api-tests` (gated on
+- CI runs **a single `lint` job** plus **two test jobs**: `mock-tests` (always)
+  and `real-api-tests` (gated on `OLLAMA_API_KEY`). The `lint` job
+  (`node scripts/lint.js` — a zero-dependency `node --check` pass over every
+  project JS file, built-ins only, no `npm install`) runs in parallel with
+  `check-secret`, and BOTH test jobs `needs: lint` (mock-tests) /
+  `needs: [check-secret, lint]` (real-api-tests), so a syntax error fails the
+  whole pipeline fast and cheaply before either shard pays for a ~30-60s Docker
+  build. `scripts/lint.js` is also `npm run lint` locally. (gated on
   `OLLAMA_API_KEY`). Each is its own job on its own runner with its own
   `COMPOSE_PROJECT_NAME` (`scratch-mock` / `scratch-real`) so the
   `dbdata`/`nm` volumes and `scratch-app`/`tests` containers never collide. There is

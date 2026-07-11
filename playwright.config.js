@@ -12,7 +12,12 @@
 //            off-topic questions get neither.
 //
 // No-docker local run: `npm test` — Playwright's webServer launches the app
-//   itself (reuseExistingServer, so if you already run `npm start` it reuses it).
+//   itself with the throwaway test-data env and tears it down after
+//   (reuseExistingServer is OFF locally, see IS_DOCKER below). It does NOT reuse
+//   your own `node server.js` / `start.bat` on 8787 — that would skip the
+//   test-data env and let the specs clobber your real preferences.json /
+//   scratch_helper.db over HTTP. If 8787 is already taken, the launch now fails
+//   loudly instead of silently reusing the wrong server.
 // Docker run: `npm run test:docker` — the app runs in its own container and the
 //   tests run in the official Playwright container; set BASE_URL=http://scratch-app:8787
 //   so webServer reuses the app container instead of launching one. (The compose
@@ -28,6 +33,21 @@ const DB_PATH = process.env.SCRATCH_DB_PATH || 'test-data/scratch_helper.test.db
 // In Docker this is ignored — the app container is reused (reuseExistingServer)
 // and already has SCRATCH_PREFS_PATH=/data/preferences.json from compose.
 const PREFS_PATH = process.env.SCRATCH_PREFS_PATH || 'test-data/preferences.json';
+
+// Reuse an existing server ONLY in Docker/CI, where the app runs in its own
+// container (started by compose) and the webServer must not launch a second
+// one. Locally we do NOT reuse: Playwright must launch the app itself with the
+// throwaway test-data env (above) and tear it down after. Two reasons:
+//   1. If your real app is already running on 8787 (start.bat / node server.js),
+//      reuse would skip the test env and the specs would read/write YOUR real
+//      preferences.json + scratch_helper.db over HTTP — silently clobbering them.
+//   2. On Windows, a reused server is not always killed when tests finish, so a
+//      leftover test server stays bound to 8787 and the next time you open the
+//      app you hit the throwaway test-data files (looks like your data vanished;
+//      it didn't — the real files are untouched on disk).
+// With reuse off, a stale server on 8787 makes the launch fail loudly (port in
+// use) instead of silently reusing the wrong server — kill it and re-run.
+const IS_DOCKER = !!process.env.BASE_URL && process.env.BASE_URL !== 'http://127.0.0.1:8787';
 
 module.exports = defineConfig({
   testDir: './tests',
@@ -45,7 +65,13 @@ module.exports = defineConfig({
   fullyParallel: false,
   workers: 1,
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 1 : 0,
+  // @mock is deterministic (route-intercepted, no network) — retrying it would
+  // only MASK flakiness, so it runs with retries: 0 and a real flake surfaces as
+  // a failure. @real hits the cloud and can flake on latency, so it keeps 1 CI
+  // retry. The CI workflow sets PLAYWRIGHT_ARGS="--grep @mock"/"--grep @real" per
+  // shard; we read it here to pick the retry count. (Locally neither is set, so
+  // both run with retries: 0 — a local @real flake is the dev's to see, not hide.)
+  retries: process.env.CI && /@real/.test(process.env.PLAYWRIGHT_ARGS || '') ? 1 : 0,
   reporter: [
     ['list'],
     ['html', { open: 'never', outputFolder: 'playwright-report' }],
@@ -67,7 +93,7 @@ module.exports = defineConfig({
   webServer: {
     command: 'node --no-warnings server.js',
     url: `${BASE_URL}/api/health`,
-    reuseExistingServer: true,
+    reuseExistingServer: IS_DOCKER,
     timeout: 60000,
     stdout: 'pipe',
     stderr: 'pipe',

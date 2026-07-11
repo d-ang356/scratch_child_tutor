@@ -4,6 +4,13 @@
   <img src="img/logo_en.png" alt="Scratch Helper logo" width="220" />
 </p>
 
+> **Personal, open-source, local-first.** This is a hobby project by a single
+> developer, released under the **MIT License** (see
+> [LICENSE](LICENSE) and the [Disclaimer](#disclaimer) below). It is a **local**
+> web app intended to run on **your own machine** with **your own** Ollama
+> backend — there is no hosted service and the author never sees your data. It
+> is a **work in progress** and will keep evolving over time.
+
 A small, friendly local web helper that teaches **Scratch 3.0** (the offline
 desktop editor) to a young child. You ask how to make something — in **English**
 or **Български** — and a tutor model (any model served by **Ollama** — the
@@ -136,8 +143,10 @@ Ollama call is made** and no API key is needed. The **OK / connected** health
 state is **not** mocked — `initial.spec.js` verifies it against the real
 `/api/health`; only the **error** states (Ollama down, model missing, fetch fail)
 are mocked in `ollamaConnectionErrors.spec.js`, to check the UI reacts
-accordingly (red/neutral dot, composer enabled vs disabled). Run only the mock
-suite:
+accordingly (red/neutral dot, composer enabled vs disabled). The same spec also
+covers a chat whose connection **drops mid-thinking**: health stays green (the
+drop is on the chat path, not the health path) while the chat shows an error and
+the composer is re-enabled for a retry. Run only the mock suite:
 ```
 npm run test:mock
 ```
@@ -160,6 +169,10 @@ OLLAMA_API_KEY=<key> SCRATCH_MODEL=gpt-oss:20b PLAYWRIGHT_ARGS="--grep @real" np
 
 ### CI (GitHub Actions)
 `.github/workflows/playwright.yml` runs on every PR and push to `main`:
+- **Lint** — a single `lint` job that both test shards depend on: `node scripts/lint.js`
+  does a `node --check` syntax pass over every project JS file (zero-dependency,
+  no `npm install` needed). A syntax error fails the pipeline before either shard
+  pays for a Docker build.
 - **Mock functional tests** — always. Deterministic, no secret needed.
 - **Real Ollama API tests** — only when the `OLLAMA_API_KEY` repo secret is set.
   `tests/real/safety.spec.js` exercises the safety gate: an off-topic question
@@ -174,19 +187,24 @@ posts a **pass/fail summary** to the workflow run page (via JUnit +
 playwright.config.js          webServer, reporters, projects (workers=1 — serial)
 tests/
   pages/                      page objects (Base, Chat, BlocksPane, Preferences, ChatHistory)
-  support/                    mockOllama (route interception), sqliteFactory, env, globalSetup (seeds DB once)
+  support/                    mockOllama (route interception + mockChatPartialThenHold), sqliteFactory, env, globalSetup (seeds DB once)
   utils/testConstants.js      shared seed chats + follow-up texts + 20-tab builder + off-topic prompt
-  specs/initial.spec.js       @mock initial smoke test (first-run modal)
-  specs/newChatAndDeleteChat.spec.js  @mock new-chat + delete-chat
+  specs/initial.spec.js       @mock initial smoke test (first-run modal) + first-run-modal guard + age validation
+  specs/newChatAndDeleteChat.spec.js  @mock new-chat + delete-chat + new-chat-mid-stream abort
   specs/gender.spec.js        @mock gender preference round-trip
-  specs/followupBlocks.spec.js @mock follow-up -> 2nd block tab + ↖ jump-to-message; 20-tab arrow-scroll
+  specs/followupBlocks.spec.js @mock follow-up -> 2nd block tab + ↖ jump-to-message; 20-tab arrow-scroll; tab-strip keyboard nav
   specs/splashLogo.spec.js    @mock splash logo matches saved language (no EN flash on BG refresh)
-  specs/ollamaConnectionErrors.spec.js @mock /api/health error branches (down / model missing / fetch fail) -> UI reacts; OK state NOT mocked
+  specs/ollamaConnectionErrors.spec.js @mock /api/health error branches (down / model missing / fetch fail) -> UI reacts; OK state NOT mocked; + chat drops mid-thinking + chat HTTP-error (502)
+  specs/stopButton.spec.js    @mock Stop aborts stream -> "(stopped)" + composer re-enabled; + Stop-with-partial-content
+  specs/emptyAnswers.spec.js  @mock empty/no-blocks finalize paths (no content / reasoning-only / prose-no-fence)
+  specs/persistence.spec.js   @mock answer persists across reload; rebuilt from DB
+  specs/languageChange.spec.js @mock language switching via prefs (EN <-> BG, persists across reload)
   real/safety.spec.js         @real safety-gate test (off-topic -> refusal)
-Dockerfile                    app image (zero-dep)
+Dockerfile                    app image (zero-dep, non-root USER node)
 docker-compose.yml            app + Playwright containers (shared DB volume)
 .github/workflows/playwright.yml
 scripts/test.sh / test.bat    no-Docker local run
+scripts/lint.js               zero-dep lint (syntax + eval/loose-== warnings + no-deps invariant + git local-data guard; `npm run lint`)
 ```
 
 Tests run **serially** (`workers: 1`): the suite shares one app instance, one
@@ -272,6 +290,10 @@ The server exposes a small JSON API: `/api/chat` (streaming tutor answer),
 - The only Scratch-controllable hardware allowed is the official Scratch 3.0
   extensions: **WeDo 2.0, Pen, Music, micro:bit, LEGO MINDSTORMS EV3, LEGO
   BOOST, Makey Makey, and Go Direct Force & Acceleration**.
+- **Local-only + sandboxed UI.** The server is same-origin, sends a strict
+  Content-Security-Policy (`script-src 'self'`, no `eval`; `frame-ancestors
+  'none'`), and caps request bodies. The Docker image runs as a non-root user.
+  None of this changes the data posture below — it just reduces blast radius.
 
 ## Troubleshooting
 
@@ -294,18 +316,58 @@ The server exposes a small JSON API: `/api/chat` (streaming tutor answer),
   `OLLAMA_ORIGINS`, …), quit and relaunch the Ollama tray app; old terminals
   keep the old environment.
 
-## Privacy
+## Privacy & data
 
-The page, the proxy, and the chat history all live on your own machine. Chat
-history and preferences are stored in `scratch_helper.db` / `preferences.json`
-next to the server — never sent anywhere. Remove them anytime
+**This app does not train any model and does not retain your data on any
+server.** There is no backend service run by the author — the Node process runs
+on *your* machine, and the only network egress is to the Ollama backend *you*
+configured. Chat history and preferences stay in `scratch_helper.db` /
+`preferences.json` next to the server, never sent anywhere. Remove them anytime
 (`rm -f preferences.json scratch_helper.db scratch_helper.db-*`), or delete
 individual chats from the drawer.
 
-The model traffic depends on your backend: with a **purely local model** (e.g.
-a model you `ollama pull`ed) nothing leaves your machine; with a **`:cloud`
-model** (either Mode A through the desktop app or Mode B through the API) the
-conversation is sent to Ollama Cloud for inference.
+**Prefer a local model — especially for a child.** With a purely local model,
+nothing leaves your machine: no question, no answer, no history. That is the
+recommended setup. A good default for a typical laptop / home PC is
+`gemma4:e4b`:
+
+```
+ollama pull gemma4:e4b
+# then start the app with the local backend:
+OLLAMA_BASE=http://localhost:11434 SCRATCH_MODEL=gemma4:e4b node --no-warnings server.js
+```
+
+For older machines with less RAM, `gemma3:4b` (~3 GB download) or `gemma3n:e4b`
+(built for everyday devices like laptops and tablets) are lighter options. Any
+Ollama-hosted model works.
+
+With a **`:cloud` model** (Mode A through the desktop app, or Mode B through the
+API), the conversation is sent to **Ollama Cloud** for inference. The author of
+this app does not control whether Ollama logs or retains those requests — that
+is governed by **Ollama's own privacy policy**, not by this app. If that
+matters to you (and for a child it usually should), use a local model so no
+conversation ever leaves your machine. The preferences modal reminds the child
+to ask a parent before using a cloud setup, and the welcome screen notes that
+the AI can make mistakes and answers only Scratch 3.0 questions.
+
+## Disclaimer
+
+This is a **personal, open-source project** released under the **MIT License**
+(see [LICENSE](LICENSE), © 2026 d-ang356). The software is provided **"as is"**,
+without warranty of any kind, express or implied.
+
+If you clone, fork, or deploy this project, **you are responsible for your own
+Ollama setup and for what data you send where.** The author does not run a
+hosted instance and does not see, store, or process any data from your copy.
+By configuring a backend (the local Ollama app, the Ollama Cloud API, or any
+other endpoint) and sharing the app with a child, **you become the deployer**,
+using the software personally for your own child(ren) — and the choice of model
+and data path (local vs. cloud) is yours alone. For children, prefer a local
+model so no conversation leaves your machine.
+
+This project is a **work in progress** and will keep evolving over time —
+features may change, break, or be removed. Verify the app behaves as you expect
+before relying on it.
 
 ## Assets
 
@@ -327,5 +389,9 @@ conversation is sent to Ollama Cloud for inference.
 
 ## License
 
-The included `scratchblocks.min.js` and `locales/bg.json` are MIT-licensed
-(© scratchblocks contributors). The rest of this project is yours to use.
+This project is licensed under the **MIT License** — see
+[LICENSE](LICENSE) (© 2026 d-ang356). The included `scratchblocks.min.js` and
+`locales/bg.json` are also MIT-licensed (© scratchblocks contributors). The
+logo/favicon assets were generated with Google Gemini and are governed by the
+[Gemini API Additional Terms of Service](https://ai.google.dev/gemini-api/terms)
+— see the Assets section.

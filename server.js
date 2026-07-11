@@ -208,28 +208,78 @@ const MIME = {
   '.map': 'application/json',
 };
 
+// Security headers applied to every response. The Content-Security-Policy is the
+// load-bearing one: it blocks inline scripts (the main XSS vector — the app uses
+// no inline <script>/on* handlers, and scratchblocks needs no eval/new Function,
+// so script-src 'self' is safe) while still allowing scratchblocks' inline SVG
+// styles (style-src 'unsafe-inline'). img-src allows data: as a hedge for any
+// renderer data-URI. connect-src 'self' keeps fetches same-origin (the proxy is
+// the only egress). Applied on the HTML document (CSP is honored per document);
+// X-Content-Type-Options nosniff is added to all static + JSON responses.
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'no-referrer',
+  'X-Frame-Options': 'DENY',
+};
+const CSP = [
+  "default-src 'self'",
+  "img-src 'self' data:",
+  "style-src 'self' 'unsafe-inline'",
+  "script-src 'self'",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
+
 function sendJSON(res, status, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
   });
   res.end(body);
 }
 
 // Read the full request body as UTF-8 (Buffer.concat to avoid splitting
-// multi-byte Cyrillic across chunks).
+// multi-byte Cyrillic across chunks). Capped at MAX_BODY bytes: returns null on
+// overflow so the caller can answer 413 instead of letting an unbounded local
+// request grow memory. (Threat model is local-first, so this is defense-in-depth
+// rather than a live concern, but it's cheap.)
+const MAX_BODY = 1024 * 1024; // 1 MB — generous for a chat message + history.
 function readBody(req) {
   return new Promise((resolve) => {
     const chunks = [];
-    req.on('data', (c) => chunks.push(c));
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', () => resolve(''));
+    let size = 0;
+    let tooLarge = false;
+    req.on('data', (c) => {
+      if (tooLarge) return;
+      size += c.length;
+      if (size > MAX_BODY) {
+        tooLarge = true;
+        resolve(null);
+        try { req.destroy(); } catch (_) { /* already closing */ }
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', () => { if (!tooLarge) resolve(Buffer.concat(chunks).toString('utf8')); });
+    req.on('error', () => { if (!tooLarge) resolve(''); });
   });
 }
 
 function serveStatic(req, res) {
-  let urlPath = decodeURIComponent(req.url.split('?')[0]);
+  // decodeURIComponent throws URIError on a malformed %-sequence (e.g. /%E0%A4).
+  // Without this guard the throw propagates as an uncaughtException and crashes
+  // the whole server — reachable by a drive-by cross-origin GET from any page the
+  // child visits (fetch('http://127.0.0.1:8787/%E0%A4', {mode:'no-cors'}) is
+  // still SENT by the browser; CORS only blocks reading the response). Reject
+  // such requests with a 400 instead of letting them kill the process.
+  let urlPath;
+  try { urlPath = decodeURIComponent(req.url.split('?')[0]); }
+  catch (e) { return sendJSON(res, 400, { error: 'bad request' }); }
   if (urlPath === '/') urlPath = '/index.html';
   // /img/ is served from the repo-root img/ dir (screenshots + logo), so the
   // web app and the README share one source of truth. Everything else is served
@@ -267,6 +317,8 @@ function serveStatic(req, res) {
         res.writeHead(200, {
           'Content-Type': MIME['.html'],
           'Cache-Control': 'no-store',
+          'Content-Security-Policy': CSP,
+          ...SECURITY_HEADERS,
         });
         res.end(out);
       });
@@ -275,6 +327,7 @@ function serveStatic(req, res) {
     res.writeHead(200, {
       'Content-Type': MIME[ext] || 'application/octet-stream',
       'Cache-Control': 'no-store',
+      ...SECURITY_HEADERS,
     });
     fs.createReadStream(resolved).pipe(res);
   });
@@ -293,12 +346,12 @@ function checkHealth(callback) {
   const tagsURL = new URL(`${OLLAMA_BASE}/api/tags`);
   const headers = OLLAMA_API_KEY ? { Authorization: authHeader() } : {};
   const req = pickModule(tagsURL).get(tagsURL, { headers }, (upstream) => {
-    let data = '';
-    upstream.on('data', (c) => (data += c));
+    const chunks = [];
+    upstream.on('data', (c) => chunks.push(c));
     upstream.on('end', () => {
       let modelAvailable = false;
       try {
-        const parsed = JSON.parse(data);
+        const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
         const models = Array.isArray(parsed.models) ? parsed.models : [];
         modelAvailable = models.some((m) => m && m.name === MODEL);
       } catch (_) { /* ignore */ }
@@ -325,6 +378,7 @@ async function handlePreferencesGet(req, res) {
 }
 async function handlePreferencesPost(req, res) {
   const raw = await readBody(req);
+  if (raw === null) return sendJSON(res, 413, { error: 'body too large' });
   let obj;
   try { obj = JSON.parse(raw || '{}'); } catch (e) { return sendJSON(res, 400, { error: 'invalid JSON body' }); }
   const prefs = sanitizePrefs(obj);
@@ -343,6 +397,7 @@ async function handleChatsList(req, res) {
 async function handleChatCreate(req, res) {
   if (!db) return sendJSON(res, 503, { error: 'history disabled (no sqlite)' });
   const raw = await readBody(req);
+  if (raw === null) return sendJSON(res, 413, { error: 'body too large' });
   let obj = {};
   try { obj = JSON.parse(raw || '{}'); } catch (e) { /* allow empty */ }
   const id = genId();
@@ -367,7 +422,7 @@ async function handleChatDelete(req, res, id) {
     db.prepare('DELETE FROM chats WHERE id = ?').run(id);
     db.exec('COMMIT');
   } catch (e) {
-    db.exec('ROLLBACK');
+    try { db.exec('ROLLBACK'); } catch (_) { /* tx may already be gone */ }
     return sendJSON(res, 500, { error: 'delete failed' });
   }
   sendJSON(res, 200, { ok: true });
@@ -375,6 +430,7 @@ async function handleChatDelete(req, res, id) {
 async function handleChatMessagePost(req, res, id) {
   if (!db) return sendJSON(res, 503, { error: 'history disabled (no sqlite)' });
   const raw = await readBody(req);
+  if (raw === null) return sendJSON(res, 413, { error: 'body too large' });
   let obj;
   try { obj = JSON.parse(raw || '{}'); } catch (e) { return sendJSON(res, 400, { error: 'invalid JSON body' }); }
   const role = obj.role === 'assistant' ? 'assistant' : 'user';
@@ -487,11 +543,11 @@ function classifyTopic(clean, cb) {
       headers: { 'Content-Type': 'application/json', Authorization: authHeader(), 'Content-Length': Buffer.byteLength(payload) },
     },
     (up) => {
-      let data = '';
-      up.on('data', (c) => (data += c));
+      const chunks = [];
+      up.on('data', (c) => chunks.push(c));
       up.on('end', () => {
         try {
-          const parsed = JSON.parse(data);
+          const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
           const content = (((parsed.choices || [])[0] || {}).message || {}).content || '';
           const verdict = content.trim().toUpperCase();
           if (verdict.startsWith('SCRATCH')) return done('SCRATCH');
@@ -514,8 +570,21 @@ function classifyTopic(clean, cb) {
 // The browser sends the conversation history as context.
 function handleChat(req, res) {
   const chunks = [];
-  req.on('data', (c) => chunks.push(c));
+  let size = 0;
+  let tooLarge = false;
+  req.on('data', (c) => {
+    if (tooLarge) return;
+    size += c.length;
+    if (size > MAX_BODY) {
+      tooLarge = true;
+      sendJSON(res, 413, { error: 'body too large' });
+      try { req.destroy(); } catch (_) { /* already closing */ }
+      return;
+    }
+    chunks.push(c);
+  });
   req.on('end', () => {
+    if (tooLarge) return;
     const raw = Buffer.concat(chunks).toString('utf8');
     let body;
     try {
@@ -571,9 +640,9 @@ function streamAnswer(clean, temperature, res) {
     },
     (up) => {
       if (up.statusCode !== 200) {
-        let errData = '';
-        up.on('data', (c) => (errData += c));
-        up.on('end', () => sendJSON(res, 502, { error: `Ollama returned ${up.statusCode}`, detail: errData.slice(0, 500) }));
+        const chunks = [];
+        up.on('data', (c) => chunks.push(c));
+        up.on('end', () => sendJSON(res, 502, { error: `Ollama returned ${up.statusCode}`, detail: Buffer.concat(chunks).toString('utf8').slice(0, 500) }));
         return;
       }
       res.writeHead(200, {
@@ -610,7 +679,11 @@ const server = http.createServer((req, res) => {
   // /api/chats/:id  and  /api/chats/:id/messages
   const m = url.match(/^\/api\/chats\/([^\/]+)(\/messages)?$/);
   if (m) {
-    const id = decodeURIComponent(m[1]);
+    // decodeURIComponent throws on a malformed %-sequence — guard it so a bad
+    // request can't crash the process (same drive-by-DoS concern as serveStatic).
+    let id;
+    try { id = decodeURIComponent(m[1]); }
+    catch (e) { return sendJSON(res, 400, { error: 'bad request' }); }
     if (m[2] === '/messages') {
       if (req.method === 'POST') return handleChatMessagePost(req, res, id);
     } else {

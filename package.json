@@ -5,6 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node --no-warnings server.js",
+    "lint": "node scripts/lint.js",
     "test": "playwright test",
     "test:mock": "playwright test --grep @mock",
     "test:real": "playwright test --grep @real",

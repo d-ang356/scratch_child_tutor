@@ -3,9 +3,13 @@
 /* ---------- Elements ---------- */
 const $ = (id) => document.getElementById(id);
 const messagesEl = $("messages");
-const welcomeEl = $("welcome");
-const welcomeSubEl = $("welcomeSub");
-const examplesEl = $("examples");
+// #welcome and #examples are NOT cached here: showWelcome() rebuilds them with
+// the same ids (messagesEl.innerHTML = "" then append), so a cached ref would
+// point at the detached original — meaning send()'s welcome-remove would no-op
+// against the new card (it'd stay alongside the first message), applyI18n()
+// would populate the detached examples (visible chips keep the old language on
+// switch), and the examples click handler would be bound to the detached
+// original (dead clicks after "New chat"). Look them up live instead.
 const inputEl = $("input");
 const sendBtn = $("sendBtn");
 const composerEl = $("composer");
@@ -42,6 +46,7 @@ const STRINGS = {
   en: {
     title: "Scratch Helper",
     subtitle: "Your friendly Scratch 3.0 tutor",
+    welcomeDisclaimer: "Scratch Helper is using AI model to provide answers and could make mistakes. It will answer only to Scratch 3.0 related questions!",
     statusChecking: "Checking Ollama…",
     statusReady: "Ollama ready",
     statusModelMissing: (m) => `Ollama up — model "${m}" not listed (try anyway)`,
@@ -77,6 +82,7 @@ const STRINGS = {
     prefsAgeErr: "Please enter a whole number from 1 to 17.",
     prefsName: "Child's name or nickname (optional)",
     prefsNamePh: "e.g. Mia",
+    prefsParentNote: "👋 Ask a parent before using this. If it's set up with a cloud model, your questions go to Ollama over the internet to get answers — a local model keeps everything on this computer.",
     cancel: "Cancel",
     save: "Save",
     you: "You",
@@ -97,6 +103,7 @@ const STRINGS = {
   bg: {
     title: "Scratch Помощник",
     subtitle: "Твоят приятелски учител по Scratch 3.0",
+    welcomeDisclaimer: "Scratch Помощник използва AI модел, за да върне отговор и може да допусне грешка. Ще отговаря само на въпроси за Scratch 3.0!",
     statusChecking: "Проверявам Ollama…",
     statusReady: "Ollama е готов",
     statusModelMissing: (m) => `Ollama работи — моделът "${m}" не е в списъка (опитай пак)`,
@@ -132,6 +139,7 @@ const STRINGS = {
     prefsAgeErr: "Моля, въведи цяло число от 1 до 17.",
     prefsName: "Име или прякор на детето (по желание)",
     prefsNamePh: "напр. Мишо",
+    prefsParentNote: "👋 Попитай родител, преди да използваш това. Ако е настроено с облачен модел, въпросите ти отиват към Ollama през интернет за отговор — локалният модел задържа всичко на този компютър.",
     cancel: "Отказ",
     save: "Запази",
     you: "Ти",
@@ -186,14 +194,18 @@ function applyI18n(lang, { syncSplash = true } = {}) {
     const v = STRINGS[LANG][el.getAttribute("data-i18n-title")];
     if (typeof v === "string") el.setAttribute("title", v);
   });
-  // Examples
-  examplesEl.innerHTML = "";
-  t("examples").forEach(([q, label]) => {
-    const li = document.createElement("li");
-    li.dataset.q = q;
-    li.textContent = label;
-    examplesEl.appendChild(li);
-  });
+  // Examples — look up #examples live (showWelcome rebuilds it, so a cached ref
+  // could point at a detached node). No-op if the welcome card isn't mounted.
+  const ex = document.getElementById("examples");
+  if (ex) {
+    ex.innerHTML = "";
+    t("examples").forEach(([q, label]) => {
+      const li = document.createElement("li");
+      li.dataset.q = q;
+      li.textContent = label;
+      ex.appendChild(li);
+    });
+  }
   // Re-render status text and input hint in the current language.
   showStatus(currentStatus.key, ...currentStatus.args);
   inputEl.title = t("composerTip") || "";
@@ -227,7 +239,20 @@ let liveRenderedSig = null; // signature of blocks already rendered during the l
 })();
 
 /* ---------- Health ---------- */
-async function checkHealth() {
+// Dedupe concurrent checkHealth callers. At boot, checkHealth() is started by
+// bootReady AND (when prefs exist) by loadPreferences(), so without this the app
+// fires two /api/health probes that race (last-writer-wins — harmless, but a
+// wasted round-trip and a brief double status flip). The first caller runs the
+// probe; concurrent callers await the same promise. scheduleHealthRetry's later
+// call happens after this resolves (healthInFlight is null again), so retries
+// are unaffected.
+let healthInFlight = null;
+function checkHealth() {
+  if (healthInFlight) return healthInFlight;
+  healthInFlight = doCheckHealth().finally(() => { healthInFlight = null; });
+  return healthInFlight;
+}
+async function doCheckHealth() {
   statusDot.className = "dot";
   showStatus("statusChecking");
   try {
@@ -535,7 +560,12 @@ async function ensureChat() {
 
 async function send(question) {
   if (streaming || !question.trim() || !prefs) return;
-  if (welcomeEl) welcomeEl.remove();
+  // Remove the welcome card if it is currently mounted (live lookup — see the
+  // Elements note above). On the first send it's index.html's #welcome; after a
+  // "New chat" it's the one showWelcome() rebuilt. Either way, this is the one
+  // actually in the DOM.
+  const welcome = document.getElementById("welcome");
+  if (welcome) welcome.remove();
   streaming = true;
   enableInput(false);
   sendBtn.textContent = t("stop");
@@ -581,7 +611,6 @@ async function send(question) {
     if (!res.ok || !res.body) {
       const txt = await res.text().catch(() => "");
       aiBubble.innerHTML = renderMarkdown(t("ollamaFail", txt.slice(0, 200)));
-      finishStream();
       return;
     }
     const reader = res.body.getReader();
@@ -658,7 +687,6 @@ function finalize(content, reasoning, aiBubble) {
     aiBubble.innerHTML = reasoning.trim()
       ? renderMarkdown(t("noAnswer"))
       : renderMarkdown(t("noAnswer2"));
-    finishStream();
     return;
   }
   aiBubble.innerHTML = renderAssistantContent(content);
@@ -785,11 +813,20 @@ function showWelcome() {
   const w = document.createElement("div");
   w.className = "welcome";
   w.id = "welcome";
-  w.innerHTML = `<div class="welcome-big">${escapeHtml(t("welcomeBig"))}</div>
-    <div class="welcome-sub" id="welcomeSub">${t("welcomeSub")}</div>
+  // Mirror index.html's welcome markup, INCLUDING the data-i18n attributes, so
+  // applyI18n() can re-translate this rebuilt card on a language switch (without
+  // the attrs, a switch after "New chat" would leave the welcome in the old
+  // language — the static index.html card has them, the rebuilt one must too).
+  // The inlined t() text is the correct language at build time; data-i18n covers
+  // subsequent switches.
+  w.innerHTML = `<div class="welcome-big" data-i18n="welcomeBig">${escapeHtml(t("welcomeBig"))}</div>
+    <div class="welcome-sub" data-i18n="welcomeSub">${escapeHtml(t("welcomeSub"))}</div>
+    <div class="welcome-subtitle" data-i18n="welcomeDisclaimer">${escapeHtml(t("welcomeDisclaimer"))}</div>
     <ul class="examples" id="examples"></ul>`;
   messagesEl.appendChild(w);
-  // Re-populate examples (applyI18n targets the original #examples; rebind here).
+  // Populate the examples list. applyI18n() also does this (via the live #examples
+  // lookup), but showWelcome may run before any applyI18n after a rebuild, so seed
+  // it here too.
   const ex = w.querySelector("#examples");
   t("examples").forEach(([q, label]) => {
     const li = document.createElement("li");
@@ -923,7 +960,11 @@ inputEl.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); composerEl.requestSubmit(); }
 });
 
-examplesEl.addEventListener("click", (e) => {
+// Example-chip clicks are delegated on #messages (the stable ancestor) rather
+// than bound directly to #examples, because showWelcome() rebuilds #examples — a
+// direct binding would be lost after "New chat" (dead clicks). Delegation stays
+// live for every rebuilt welcome card.
+messagesEl.addEventListener("click", (e) => {
   const li = e.target.closest("li[data-q]");
   if (!li) return;
   inputEl.value = li.dataset.q;

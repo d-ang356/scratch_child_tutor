@@ -43,8 +43,11 @@ There are **two groups of tests**, selected by a tag in the test title:
 > smoke test calls `expectOllamaConnected()` against the real `/api/health`.
 > The **error** health states (Ollama down, model missing, fetch fail) **are**
 > mocked — see `mockOllamaHealthCheck` in §9 and `ollamaConnectionErrors.spec.js`.
-> Principle: don't mock the thing you're verifying is real; mock only to reach
-> error states you can't trigger deterministically against a real backend.
+> The same spec also covers a chat whose `/api/chat` connection **drops
+> mid-thinking** (`mockChatDrop`): health is NOT mocked there, so the dot stays
+> green while the chat shows an error and the composer is re-enabled. Principle:
+> don't mock the thing you're verifying is real; mock only to reach error states
+> you can't trigger deterministically against a real backend.
 
 The app itself stays **zero-dependency**. Playwright is a **dev-only** dependency
 (`@playwright/test` in `package.json`); normal users who just run
@@ -212,20 +215,31 @@ push means the file is malformed, not that the workflow executed.)
 
 ### Jobs
 
-CI runs **two independent jobs** (mock + real), so the real-API tests never
-share Docker resources (volumes / containers / network) with the mock tests:
+CI runs a **`lint` job** plus **two independent test jobs** (mock + real), so
+the real-API tests never share Docker resources (volumes / containers /
+network) with the mock tests:
 
 | Job | grep | Compose project | Model default | Runs when |
 |--------------|------|-----------------|---------------|----------|
-| `mock-tests` | `@mock` | `scratch-mock` | `glm-5.2` | every PR / push to `main` |
-| `real-api-tests` | `@real` | `scratch-real` | `gpt-oss:20b` | only if `OLLAMA_API_KEY` is set |
+| `lint` | — | — | — | every PR / push to `main` (no Docker; `node scripts/lint.js`) |
+| `mock-tests` | `@mock` | `scratch-mock` | `glm-5.2` | every PR / push to `main` (needs `lint`) |
+| `real-api-tests` | `@real` | `scratch-real` | `gpt-oss:20b` | only if `OLLAMA_API_KEY` is set (needs `check-secret` + `lint`) |
 
-- Each job is its **own runner** with its own `COMPOSE_PROJECT_NAME`
+- The `lint` job (`node scripts/lint.js` — a zero-dependency `node --check`
+  pass over every project JS file, plus a warning pass for `eval`/`new
+  Function`/loose `==`, a `package.json` no-`dependencies` invariant, and a
+  git local-data guard) runs in parallel with `check-secret`, with **no
+  `npm install`** (built-ins only). Both test jobs `needs: lint` (mock) /
+  `needs: [check-secret, lint]` (real), so a syntax error fails the whole
+  pipeline fast and cheaply before either shard pays for a ~30–60 s Docker
+  build. `scripts/lint.js` is also `npm run lint` locally.
+- Each test job is its **own runner** with its own `COMPOSE_PROJECT_NAME`
   (`scratch-mock` / `scratch-real`). That isolates the `dbdata` / `nm` volumes
   and `app` / `tests` containers per job, so the two suites can never collide
   even if they were ever co-located. Each job builds and runs its own
   `docker compose up`.
-- The two jobs run in parallel (the real one waits only on `check-secret`).
+- The two test jobs run in parallel (the real one waits only on `check-secret`
+  and `lint`).
 - Each job uploads its own report artifact (`playwright-report-mock` /
   `playwright-report-real`) and posts its own `dorny/test-reporter` check
   ("Mock functional tests" / "Real Ollama API tests").
@@ -357,6 +371,7 @@ class MyPage extends BasePage {
 | `input`, `sendBtn` | composer textarea + send button |
 | `statusDot`, `statusText` | Ollama health indicator |
 | `newChatBtn` | top-right "New chat" |
+| `chatsBtn` | the `#chatsBtn` "Chats" / "Чатове" button (`data-i18n="chats"`) — a stable, always-visible language probe used by `languageChange.spec` |
 | `exampleItems()` | the predefined suggestion chips (`#examples li[data-q]`) |
 | `userBubbles()`, `assistantBubbles()` | all user / assistant message bubbles |
 | `lastUserBubble()`, `lastAssistantBubble()` | the most recent of each |
@@ -368,6 +383,7 @@ class MyPage extends BasePage {
 | `expectOllamaModelIssue(timeout?)` | waits for the model-missing state: neutral dot (neither `ok` nor `bad`) AND `#statusText` contains the model name. The model-name check pins the branch (the transient "checking" state is also neutral but doesn't name the model). Language-independent |
 | `clickExample(i)` | clicks suggestion chip `i` (this sends the question) |
 | `fillQuestion(text)`, `send()` | type a question and click Send |
+| `stop()` | click the Stop button — the **same** `#sendBtn`, relabeled "Stop" while streaming. Aborts the in-flight fetch via `AbortController` (→ `AbortError`), so `send()`'s catch renders the "(stopped)" / "(спряно)" marker and re-enables the composer. Distinct from `mockChatDrop` (a server-side route abort → `TypeError` → the "Connection lost." branch) |
 | `startNewChat()` | click "New chat" |
 
 ### BlocksPanePage (`tests/pages/BlocksPanePage.js`) — right "Scratch blocks" pane
@@ -628,6 +644,81 @@ tab** — useful for mocked UI tests of the empty/no-answer path.
 ```js
 const { mockChatEmpty } = require('../support/mockOllama');
 await mockChatEmpty(page);
+```
+
+### `mockChatDrop(page)` → `{ release }`
+
+Holds `/api/chat` so the UI shows the "🤔 Thinking…" state, then on `release()`
+**drops the connection** (`route.abort('failed')`). The fetch rejects as a
+network failure (a `TypeError "Failed to fetch"`, *not* the `AbortController`'s
+`AbortError` — that path is the Stop button), so `sendChat`'s `catch` renders
+`t("connLost", …)` ("Connection lost." / "Връзката прекъсна.") in the assistant
+bubble. Use this for the mid-conversation-drop case: `/api/health` is **not**
+mocked, so the dot stays **green** while the chat answer becomes an error and
+the composer is re-enabled for a retry. Mirrors `mockChatAnswer({ hold: true })`.
+
+```js
+const { mockChatDrop } = require('../support/mockOllama');
+const { release } = await mockChatDrop(page);   // before chat.open() / send
+await chat.send();
+await chat.expectThinking();                    // model is thinking (held)
+release();                                      // drop -> "Connection lost."
+await expect(chat.lastAssistantBubble()).toContainText(/Connection lost|Връзката прекъсна/);
+await chat.expectOllamaConnected();             // health STILL green
+```
+
+### `mockChatPartialThenHold(page, { reasoning?, contentChunks? })`
+
+Streams a few content deltas and then **holds the stream open** (never closes),
+so a test can click **Stop mid-stream with non-empty `content`** — the path
+where `sendChat`'s `AbortError` branch renders the partial prose + a
+`(stopped)` marker and tabs whatever partial scratchblocks fence arrived. This
+is the one helper that does **not** use `page.route`: `route.fulfill` is
+one-shot (it can hold, or fulfill the whole body at once, but not stream some
+chunks then hold). Instead it overrides `window.fetch` via
+`page.addInitScript` and returns a synthetic `Response` whose body is a
+`ReadableStream` we control — enqueue the reasoning delta (optional) and the
+given content chunks as SSE `data:` lines, then never close, so the reader
+stays pending until the test aborts.
+
+The override honors the request's `AbortController` signal: on abort it errors
+the stream controller with a `DOMException` named `AbortError`, so
+`reader.read()` rejects with `AbortError` exactly like a real aborted fetch
+(without this the held stream would ignore the abort and the test would hang).
+Every non-`/api/chat` fetch passes through to the real `fetch`, so `/api/health`
+is real (green) and the persistence endpoints hit the server.
+
+> **MUST be registered BEFORE `chat.open()`.** `addInitScript` runs on the
+> **next** navigation, so it only takes effect on the `open()` that follows.
+>
+> **Match `/api/chat` precisely, not as a substring.** The override matches the
+> URL with `/\/api\/chat(\?|$)/` (end-of-path or followed by `?`). A naive
+> `url.includes('/api/chat')` would **also swallow `/api/chats`** (the history
+> list endpoint `refreshChatList` fetches at boot) — `/api/chat` is a substring
+> of `/api/chats` — routing it into this never-closing stream, hanging
+> `bootReady` so the loading splash never clears. `page.route('**/api/chat')`
+> doesn't have this problem (the glob requires the path to end with
+> `/api/chat`); this hand-rolled check must be just as precise.
+
+```js
+const { mockChatPartialThenHold } = require('../support/mockOllama');
+
+// BEFORE chat.open(): stream prose, then open a scratchblocks fence and HOLD.
+await mockChatPartialThenHold(page, {
+  contentChunks: [
+    "Here's how to make the cat walk!\n\n1. Drag a **when green flag clicked** block.\n",
+    "```scratchblocks\nwhen green flag clicked\nmove [10] ste",   // open fence, no closing ```
+  ],
+});
+
+await chat.open();
+await prefs.ensureDismissed();
+await chat.fillQuestion('How do I make the cat walk?');
+await chat.send();
+await expect(chat.lastAssistantBubble()).toContainText('cat walk');   // prose arrived
+await chat.stop();                                                    // AbortError mid-stream
+await expect(chat.lastAssistantBubble()).toContainText(/\(stopped\)|\(спряно\)/);
+await expect(blocks.tabs()).toHaveCount(1);   // FENCE_LOOSE captured the partial fence
 ```
 
 ### `mockOllamaHealthCheck(page, ollamaUp, modelAvailable)`
@@ -894,10 +985,25 @@ await page.route('**/api/chat', (route) =>
   in `.env` or your shell.
 - **`:cloud` model not found in API mode** — you used `SCRATCH_MODEL=gpt-oss:20b:cloud`
   with `OLLAMA_BASE=https://ollama.com`. Drop the `:cloud` suffix.
-- **Port 8787 already in use (local no-Docker)** — the `webServer` reuses an
-  existing server on 8787. If a stale server is running with the wrong env, stop
-  it first, or set `PORT` and `BASE_URL` to another port:
+- **Port 8787 already in use (local no-Docker)** — locally the `webServer` does
+  **not** reuse an existing server (`reuseExistingServer` is on only for
+  Docker/CI, where the app runs in its own container). Playwright launches the
+  app itself with the throwaway `test-data/` env and tears it down after, so your
+  real repo-root `preferences.json` / `scratch_helper.db` are never touched by a
+  local test run. If a stale server (a previous run that didn't clean up, or your
+  own `node server.js` / `start.bat`) is still bound to 8787, the launch now
+  **fails loudly** ("port in use") instead of silently reusing that server (which
+  used to clobber your real files over HTTP). Kill it and re-run:
+  `netstat -ano | grep :8787` → `taskkill //PID <pid> //F` (Windows) /
+  `kill <pid>` (macOS/Linux). Or use another port:
   `PORT=8800 BASE_URL=http://127.0.0.1:8800 npm test`.
+- **"My preferences / chats vanished after running tests"** — they didn't. You
+  connected to a leftover test server still bound to 8787 (a previous run that
+  didn't tear down), which serves the throwaway `test-data/` files (`en`, age 8,
+  no name, no chats), not your real repo-root data. Your real `preferences.json`
+  and `scratch_helper.db` are untouched on disk. Kill the leftover server (above)
+  and start the app normally. With `reuseExistingServer` now off locally, new
+  runs no longer leave a server behind.
 - **`unable to open database file`** — only happens if you override
   `SCRATCH_DB_PATH` to a path whose parent doesn't exist. The server and factory
   both create the parent dir now, so this should not recur.
@@ -964,23 +1070,27 @@ tests/
   support/
     env.js                      baseUrl() / dbPath() / prefsPath()
     globalSetup.js              seeds the shared DB once before all tests
-    mockOllama.js               mockChatAnswer / mockChatSequence / mockChatEmpty / mockOllamaHealthCheck
+    mockOllama.js               mockChatAnswer / mockChatSequence / mockChatEmpty / mockChatDrop / mockChatPartialThenHold / mockOllamaHealthCheck
     sqliteFactory.js            clear / reset / createNew / insert* / list / get
   utils/
     testConstants.js            shared seed chats (FULL/MEOW) + follow-up answers/questions + 20-tab builder + OFFTOPIC_QUESTION
   specs/
-    initial.spec.js             @mock initial smoke test (first-run modal; real /api/health green state)
-    newChatAndDeleteChat.spec.js @mock new-chat + delete-chat (self-contained)
+    initial.spec.js             @mock initial smoke test (first-run modal; real /api/health green state) + first-run-modal-cannot-be-dismissed guard + age-input validation
+    newChatAndDeleteChat.spec.js @mock new-chat + delete-chat (self-contained) + new-chat-mid-stream abort
     gender.spec.js              @mock gender preference round-trip (persist + reload)
-    followupBlocks.spec.js      @mock follow-up -> 2nd block tab + ↖ jump-to-message (fresh + seeded chat); 20-tab arrow-scroll test
+    followupBlocks.spec.js      @mock follow-up -> 2nd block tab + ↖ jump-to-message (fresh + seeded chat); 20-tab arrow-scroll test; tab-strip keyboard nav
     splashLogo.spec.js          @mock served index.html splash logo matches saved language (no EN flash on BG refresh)
-    ollamaConnectionErrors.spec.js @mock /api/health error branches (down / model-missing / fetch-fail) -> UI reacts (dot + composer enable/disable); OK state NOT mocked
+    ollamaConnectionErrors.spec.js @mock /api/health error branches (down / model-missing / fetch-fail) -> UI reacts (dot + composer enable/disable); OK state NOT mocked; + chat-drops-mid-thinking (health green, chat error) + chat HTTP-error (502 -> ollamaFail)
+    stopButton.spec.js          @mock Stop button aborts the stream -> "(stopped)" marker + composer re-enabled (health stays green); + Stop-with-partial-content (mockChatPartialThenHold)
+    emptyAnswers.spec.js        @mock empty/no-blocks finalize paths (no content -> noAnswer2; reasoning-only -> noAnswer; prose-no-fence -> no tab)
+    persistence.spec.js         @mock mocked answer persists across reload; drawer -> open by title -> rebuilt from DB
+    languageChange.spec.js      @mock language switching via prefs modal (EN "Chats" -> BG "Чатове" -> reload persists -> EN); deletes preferences.json in beforeEach
   real/
     safety.spec.js              @real safety-gate test (off-topic -> refusal; gated on key)
-Dockerfile                      app image (zero-dep, node:22-slim)
+Dockerfile                      app image (zero-dep, node:22-slim, non-root USER node, /data volume owned by node)
 .dockerignore                   keeps the app image small (excludes root *.md explicitly, not **/*.md)
 docker-compose.yml              app + Playwright containers (shared DB volume; `expose`, no host port)
-.github/workflows/playwright.yml CI: 2 jobs (mock always, real gated on OLLAMA_API_KEY via check-secret; isolated compose projects; workers=1 serial; concurrency cancels superseded runs; reporter guarded + continue-on-error)
+.github/workflows/playwright.yml CI: lint job + 2 test jobs (mock always, real gated on OLLAMA_API_KEY via check-secret; isolated compose projects; workers=1 serial; concurrency cancels superseded runs; reporter guarded + continue-on-error)
 scripts/test.sh / test.bat      no-Docker local run
 ```
 

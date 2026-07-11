@@ -176,4 +176,55 @@ test.describe('Follow-up question grows a second block tab @mock', () => {
     await expect(blocks.tabNext).toBeEnabled();
     expect(await blocks.tabVisibleInStrip(0)).toBeTruthy();
   });
+
+  test('tab strip keyboard nav: Arrow/Home/End move selection and focus @mock', async ({ page }) => {
+    const chat = new ChatPage(page);
+    const prefs = new PreferencesModalPage(page);
+    const blocks = new BlocksPanePage(page);
+    const chatHistory = new ChatHistoryDrawerPage(page);
+
+    // Seed a 3-exchange chat; every assistant turn carries blocks, so loading it
+    // builds 3 right-pane tabs — enough to exercise ArrowLeft/Home/End without
+    // overflowing the strip (keyboard nav is independent of the overflow UI).
+    const title = `Kbd nav ${Date.now()}`;
+    const db = createFactory().open();
+    try {
+      db.insertConversation({ title, ...buildManyTabsConversation(3) });
+    } finally {
+      db.close();
+    }
+
+    await chat.open();
+    await prefs.ensureDismissed();
+
+    await chatHistory.open();
+    await expect(chatHistory.rowByTitle(title)).toBeVisible();
+    await chatHistory.clickChatByTitle(title);
+    // Wait for the loaded conversation to render (loadChat is async and closes
+    // the drawer once it finishes — by the time the bubbles render, the tab
+    // strip is interactable).
+    await expect(chat.assistantBubbles()).toHaveCount(3);
+    await expect(blocks.tabs()).toHaveCount(3);
+    // loadChat selects the last (3rd) tab on load.
+    await blocks.expectActiveTabNumber(3);
+
+    // Roving tabindex: arrow/Home/End on the strip move BOTH selection and
+    // focus (selectTab re-renders, then the keydown handler focuses the new
+    // button). The locator re-resolves after each re-render, so nth(i) always
+    // points at the current button node.
+    const tabBtns = blocks.tabStrip.locator('button.tab');
+    await tabBtns.nth(2).focus();
+
+    await page.keyboard.press('ArrowLeft');
+    await blocks.expectActiveTabNumber(2);
+    await expect(tabBtns.nth(1)).toBeFocused();
+
+    await page.keyboard.press('Home');
+    await blocks.expectActiveTabNumber(1);
+    await expect(tabBtns.nth(0)).toBeFocused();
+
+    await page.keyboard.press('End');
+    await blocks.expectActiveTabNumber(3);
+    await expect(tabBtns.nth(2)).toBeFocused();
+  });
 });
