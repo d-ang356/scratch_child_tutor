@@ -128,6 +128,9 @@ body {
 /* Blocks pane */
 .blocks-scroll { flex: 1 1 auto; overflow-y: auto; padding: 18px; }
 .blocks-empty { color: var(--text-dim); text-align: center; padding-top: 40px; font-size: 14px; line-height: 1.6; }
+/* applyI18n sets textContent (no HTML), so strings carry a literal \n instead of
+   <br>; pre-line renders it while keeping the i18n path injection-safe. */
+.blocks-empty-text { white-space: pre-line; }
 .blocks-empty-big { font-size: 40px; margin-bottom: 8px; }
 .blocks-host { display: flex; flex-direction: column; gap: 24px; }
 .blocks-host:empty { display: none; }
