@@ -143,7 +143,12 @@ async function mockChatDrop(page) {
 async function mockChatPartialThenHold(page, opts = {}) {
   const reasoning = opts.reasoning || '';
   const contentChunks = Array.isArray(opts.contentChunks) ? opts.contentChunks : [];
-  await page.addInitScript(({ reasoning, contentChunks }) => {
+  // opts.search: emit the "search underway" marker frame the real server sends
+  // for Build-help answers ({delta:{search:true}}) BEFORE any reasoning or
+  // content — the UI must switch its Thinking indicator to the "online search"
+  // wording while the stream is then held (see buildSearch.spec).
+  const search = !!opts.search;
+  await page.addInitScript(({ reasoning, contentChunks, search }) => {
     const origFetch = window.fetch;
     // Match /api/chat only at the END of the path (optionally followed by a
     // query string). A naive url.includes('/api/chat') would ALSO swallow
@@ -162,6 +167,7 @@ async function mockChatPartialThenHold(page, opts = {}) {
         start(controller) {
           const enc = new TextEncoder();
           const sse = (obj) => controller.enqueue(enc.encode('data: ' + JSON.stringify(obj) + '\n\n'));
+          if (search) sse({ choices: [{ delta: { search: true } }] });
           if (reasoning) sse({ choices: [{ delta: { reasoning } }] });
           for (const c of contentChunks) sse({ choices: [{ delta: { content: c } }] });
           // Hold: do NOT close the controller. The reader stays pending so the
@@ -181,7 +187,7 @@ async function mockChatPartialThenHold(page, opts = {}) {
         headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store' },
       });
     };
-  }, { reasoning, contentChunks });
+  }, { reasoning, contentChunks, search });
 }
 
 

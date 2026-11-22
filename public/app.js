@@ -38,6 +38,7 @@ const prefsCancel = $("prefsCancel");
 const pAge = $("pAge");
 const pName = $("pName");
 const pAgeErr = $("pAgeErr");
+const pBuildHelp = $("pBuildHelp");
 const splash = $("splash");
 const splashLogo = $("splashLogo");
 
@@ -48,6 +49,7 @@ const STRINGS = {
     subtitle: "Your friendly Scratch 3.0 tutor",
     welcomeDisclaimer: "Scratch Helper is using AI model to provide answers and could make mistakes. It will answer only to Scratch 3.0 related questions!",
     statusChecking: "Checking Ollama…",
+    statusThinkingSearch: "Thinking and doing online search…",
     statusReady: "Ollama ready",
     statusModelMissing: (m) => `Ollama up — model "${m}" not listed (try anyway)`,
     statusDown: "Ollama not reachable — start the Ollama app",
@@ -82,7 +84,9 @@ const STRINGS = {
     prefsAgeErr: "Please enter a whole number from 1 to 17.",
     prefsName: "Child's name or nickname (optional)",
     prefsNamePh: "e.g. Mia",
-    prefsParentNote: "👋 Ask a parent before using this. If it's set up with a cloud model, your questions go to Ollama over the internet to get answers — a local model keeps everything on this computer.",
+    prefsBuildHelp: "Online search for better answers (parent toggle)",
+    prefsBuildHelpHint: "When on, questions about official kits (e.g. a robot with WeDo 2.0) fetch short snippets from approved LEGO Education / Scratch pages to make the answer richer.",
+    prefsParentNote: "👋 Ask a parent before using this. If it's set up with a cloud model, your questions are sent to Ollama over the internet for an answer from the cloud model — a local model keeps everything on this computer. When \"Online search for better answers\" is on, approved LEGO Education / Scratch pages are also fetched from the internet for official kits and/or solutions. This project is independent: it is not affiliated with, sponsored by, or endorsed by the Scratch Foundation or the LEGO Group. Scratch is a project of the Scratch Foundation (free at scratch.mit.edu); LEGO® is a trademark of the LEGO Group, which does not sponsor, authorize, or endorse this project.",
     cancel: "Cancel",
     save: "Save",
     you: "You",
@@ -98,6 +102,7 @@ const STRINGS = {
       ["How do I make the cat walk and say hello when the game starts?", "How do I make the cat walk and say hello?"],
       ["How can I use an if block to check the score when the player clicks something?", "How do I use an if block to check the score?"],
       ["How do I make a WeDo 2.0 motor turn on when I press the green flag?", "How do I turn on a WeDo 2.0 motor?"],
+      ["What official robot can we build and program with WeDo 2.0?", "What can we build with WeDo 2.0?"],
     ],
   },
   bg: {
@@ -105,6 +110,7 @@ const STRINGS = {
     subtitle: "Твоят приятелски учител по Scratch 3.0",
     welcomeDisclaimer: "Scratch Помощник използва AI модел, за да върне отговор и може да допусне грешка. Ще отговаря само на въпроси за Scratch 3.0!",
     statusChecking: "Проверявам Ollama…",
+    statusThinkingSearch: "Мисля и правя онлайн справка…",
     statusReady: "Ollama е готов",
     statusModelMissing: (m) => `Ollama работи — моделът "${m}" не е в списъка (опитай пак)`,
     statusDown: "Ollama не е достъпен — стартирай приложението Ollama",
@@ -139,7 +145,9 @@ const STRINGS = {
     prefsAgeErr: "Моля, въведи цяло число от 1 до 17.",
     prefsName: "Име или прякор на детето (по желание)",
     prefsNamePh: "напр. Мишо",
-    prefsParentNote: "👋 Попитай родител, преди да използваш това. Ако е настроено с облачен модел, въпросите ти отиват към Ollama през интернет за отговор — локалният модел задържа всичко на този компютър.",
+    prefsBuildHelp: "Онлайн справка за по-добри отговори (настройка за родител)",
+    prefsBuildHelpHint: "Когато е включено, въпросите за официални WeDo 2.0 комплекти (напр. робот с WeDo 2.0) извличат кратки откъси от одобрени страници на LEGO Education / Scratch, за да е по-богат отговорът.",
+    prefsParentNote: "👋 Попитай родител, преди да използваш това. Ако е настроено с облачен модел, въпросите ти се изпращат към Ollama чрез интернет. Така получаваш отговор от облачен модел. Локалният модел задържа всичко на този компютър. Когато „Онлайн справка за по-добри отговори“ е включено, одобрени страници на LEGO Education / Scratch също се извличат от интернет за официални комплекти и/или решения. Този проект е независим: не е свързан, спонсориран или одобрен от Scratch Foundation или LEGO Group. Scratch е проект на Scratch Foundation (безплатен на scratch.mit.edu); LEGO® е търговска марка на LEGO Group, която не спонсорира, разрешава или одобрява този проект.",
     cancel: "Отказ",
     save: "Запази",
     you: "Ти",
@@ -155,6 +163,7 @@ const STRINGS = {
       ["Как да накарам котката да ходи и да каже здравей, когато започна играта?", "Как да накарам котката да ходи и да каже здравей?"],
       ["Как да използвам блок „ако“, за да проверявам точките, когато играчът кликне нещо?", "Как да използвам блок „ако“ за точките?"],
       ["Как да накарам WeDo 2.0 мотор да се включи, когато щракна зеленото знаме?", "Как да включа WeDo 2.0 мотор?"],
+      ["Какъв официален робот можем да построим и програмираме с WeDo 2.0?", "Какво можем да построим с WeDo 2.0?"],
     ],
   },
 };
@@ -591,6 +600,10 @@ async function send(question) {
   chatMessages.push({ role: "user", content: question });
 
   const aiBubble = appendMsg("assistant", t("tutor"));
+  // New streaming turn: think-hold bookkeeping starts now (a stale timer from
+  // an aborted previous turn can never render into this fresh bubble).
+  if (thinkHoldTimer) { clearTimeout(thinkHoldTimer); thinkHoldTimer = null; }
+  streamStartedAt = Date.now();
   // Show the thinking indicator immediately, before the fetch, so the child
   // gets instant feedback while the server runs the safety gate and waits for
   // the model's first reasoning delta. updateLive() replaces it once content
@@ -616,6 +629,10 @@ async function send(question) {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
+    // Set when the server sends its marker frame ({delta:{search:true}}) — the
+    // approved-source gather is running and the Thinking indicator switches to
+    // the "doing online search" wording.
+    let searching = false;
     const handleLine = (line) => {
       const trimmed = line.trim();
       if (!trimmed || !trimmed.startsWith("data:")) return;
@@ -625,9 +642,19 @@ async function send(question) {
         const obj = JSON.parse(data);
         const delta = obj.choices && obj.choices[0] && obj.choices[0].delta;
         if (delta) {
+          if (delta.search !== undefined) {
+            // Marker frame: true while the approved-source gather runs, false
+            // again when it finished without producing context (so the
+            // "online search" wording cannot linger past the actual search).
+            // Rewrite the indicator ONLY when the phase label changes.
+            searching = !!delta.search;
+            const t = aiBubble.querySelector(".thinking");
+            if (!t || t.dataset.search !== (searching ? "1" : "0")) aiBubble.innerHTML = thinkingHTML(searching);
+            return;
+          }
           if (delta.content) content += delta.content;
           if (delta.reasoning) reasoning += delta.reasoning;
-          updateLive(content, reasoning, aiBubble);
+          updateLive(content, reasoning, aiBubble, searching);
         }
       } catch (_) { /* ignore malformed chunk */ }
     };
@@ -643,6 +670,8 @@ async function send(question) {
     if (buf.trim()) handleLine(buf);
     finalize(content, reasoning, aiBubble);
   } catch (e) {
+    // Abort/error paths render immediately — never behind the think-hold.
+    if (thinkHoldTimer) { clearTimeout(thinkHoldTimer); thinkHoldTimer = null; }
     if (e.name === "AbortError") {
       const openMatch = content.match(FENCE_OPEN);
       const expl = openMatch ? content.slice(0, openMatch.index) : content;
@@ -657,18 +686,64 @@ async function send(question) {
   }
 }
 
-function thinkingHTML() {
-  return '<div class="thinking">🤔 <span class="dots"><i></i><i></i><i></i></span> ' + escapeHtml(t("statusChecking").replace("Ollama", "…")) + '</div>';
+/* The Thinking indicator is guaranteed a short MINIMUM visible run. A fast
+ * (locally cached) answer otherwise streams in within ~100-300 ms of send —
+ * the indicator then flashes for less time than a child can perceive, which
+ * reads as "the app never showed thinking at all" (observed with pre-set
+ * example chips, which use the same send() path as typing). The ANSWER is
+ * never delayed beyond the hold: content kept streaming during it; only the
+ * switch-in of the answer text waits for the hold to end. Streaming states
+ * are per-turn, tracked in send(). */
+const MIN_THINK_MS = 700;
+let streamStartedAt = 0;
+let thinkHoldTimer = null;
+
+function pastThinkHold() {
+  return !streamStartedAt || Date.now() - streamStartedAt >= MIN_THINK_MS;
+}
+// Run fn once at least MIN_THINK_MS have passed since send() started.
+function afterThinkHold(fn) {
+  const remain = pastThinkHold() ? 0 : MIN_THINK_MS - (Date.now() - streamStartedAt);
+  if (remain <= 0) return fn();
+  if (thinkHoldTimer) clearTimeout(thinkHoldTimer);
+  thinkHoldTimer = setTimeout(() => { thinkHoldTimer = null; fn(); }, remain);
 }
 
-function updateLive(content, reasoning, aiBubble) {
+function thinkingHTML(searching) {
+  // searching=true is set by the server's SSE marker frame while the approved-
+  // source gather runs, so the child sees "…doing online search…" instead of
+  // the plain checking dots during that window. data-search marks the phase so
+  // updateLive() only rebuilds the indicator (and restarts its animation) when
+  // the label actually CHANGES — not on every streaming delta (which makes the
+  // dots flicker instead of animating smoothly).
+  const text = searching
+    ? t("statusThinkingSearch")
+    : t("statusChecking").replace("Ollama", "…");
+  return '<div class="thinking" data-search="' + (searching ? "1" : "0") + '">🤔 <span class="dots"><i></i><i></i><i></i></span> ' + escapeHtml(text) + '</div>';
+}
+
+// Live stream render. Called once per SSE delta — rebuilding innerHTML here
+// every time RESTARTS the CSS animation of whatever indicator is showing
+// (the thinking dots visibly flicker instead of animating smoothly), so in the
+// pure-indicator states the markup is only written when it's actually missing
+// or shows the wrong phase.
+function updateLive(content, reasoning, aiBubble, searching = false) {
   if (!content.trim()) {
-    aiBubble.innerHTML = reasoning.trim() ? thinkingHTML() : '<span class="cursor"></span>';
+    if (reasoning.trim()) {
+      const t = aiBubble.querySelector(".thinking");
+      if (!t || t.dataset.search !== (searching ? "1" : "0")) aiBubble.innerHTML = thinkingHTML(searching);
+      return;
+    }
+    if (!aiBubble.querySelector(".cursor")) aiBubble.innerHTML = '<span class="cursor"></span>';
     return;
   }
   const openMatch = content.match(FENCE_OPEN);
   const expl = openMatch ? content.slice(0, openMatch.index) : content;
-  aiBubble.innerHTML = renderMarkdown(expl) + (streaming ? '<span class="cursor"></span>' : "");
+  // Content render waits for the think-hold (the dots keep running meanwhile);
+  // the right-pane live render below is NOT delayed.
+  afterThinkHold(() => {
+    aiBubble.innerHTML = renderMarkdown(expl) + (streaming ? '<span class="cursor"></span>' : "");
+  });
 
   const completeMatch = content.match(FENCE_COMPLETE);
   if (completeMatch) {
@@ -689,7 +764,12 @@ function finalize(content, reasoning, aiBubble) {
       : renderMarkdown(t("noAnswer2"));
     return;
   }
-  aiBubble.innerHTML = renderAssistantContent(content);
+  // Same think-hold as the live render (see updateLive): the indicator gets
+  // its minimum run even when the whole answer arrives within it, and the
+  // persistence below happens right away regardless.
+  afterThinkHold(() => {
+    aiBubble.innerHTML = renderAssistantContent(content);
+  });
 
   const blocks = extractBlocks(content);
   if (blocks.trim()) {
@@ -868,11 +948,12 @@ async function loadPreferences() {
 
 function openPrefs(forceFirst) {
   // Pre-fill from current prefs (or defaults).
-  const cur = prefs || { lang: "en", age: null, name: "", gender: "unspecified" };
+  const cur = prefs || { lang: "en", age: null, name: "", gender: "unspecified", buildHelp: false };
   prefsForm.querySelector(`input[name="pLang"][value="${cur.lang || "en"}"]`).checked = true;
   prefsForm.querySelector(`input[name="pGender"][value="${cur.gender || "unspecified"}"]`).checked = true;
   pAge.value = cur.age != null ? cur.age : "";
   pName.value = cur.name || "";
+  pBuildHelp.checked = cur.buildHelp === true;
   pAgeErr.hidden = true;
   prefsModal.hidden = false;
   prefsModal.dataset.first = forceFirst ? "1" : "";
@@ -898,10 +979,11 @@ prefsForm.addEventListener("submit", async (e) => {
     return;
   }
   const name = pName.value.trim();
+  const buildHelp = pBuildHelp.checked;
   const res = await fetch("/api/preferences", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ lang, age, name, gender }),
+    body: JSON.stringify({ lang, age, name, gender, buildHelp }),
   });
   const data = await res.json();
   if (!res.ok || !data.prefs) {

@@ -78,6 +78,7 @@ warning at startup if it sees a `:cloud` suffix while pointed at `ollama.com`.
 | `SCRATCH_MODEL` | `glm-5.2:cloud` | Any Ollama model name. Use `:cloud` only in Mode A. |
 | `OLLAMA_BASE` | `http://localhost:11434` | Ollama base URL. `https://ollama.com` for Mode B. |
 | `OLLAMA_API_KEY` | _(none)_ | Required for Mode B; ignored by the local app in Mode A. |
+| `SCRATCH_BUILD_SOURCES` | `education.lego.com,scratch.mit.edu,scratch-wiki.info` | Approved-domain allowlist for the optional Build-help gather (off by default — see "Privacy & data"). |
 
 The server picks `http` vs `https` from `OLLAMA_BASE`, so cloud (HTTPS) works
 without any other change.
@@ -228,7 +229,17 @@ the app uses (`SCRATCH_DB_PATH`, shared via a Docker volume in CI) and can
 - The **right pane** shows the Scratch blocks, drawn the way they look in the
   editor, in the same language you asked in.
 - A **🤔 Thinking…** indicator appears the moment you send, while the model is
-  still reasoning (and while the server checks the topic is on-Scratch).
+  still reasoning (and while the server checks the topic is on-Scratch). It
+  stays up until the model actually starts answering — including the extra
+  approved-source fetch (see below), so the child never sees a half answer.
+- **Build help (parent toggle, default off):** when the child asks for an
+  official kit build (e.g. *"build a samurai robot with WeDo 2.0"*), the server
+  can gather short snippets from approved LEGO/Scratch pages and give them to
+  the tutor as context. Such answers open with a 🔎 note — *"I did a quick web
+  check of the official LEGO Education and Scratch sources…"* — followed by an
+  honest statement of what the sources covered, then the usual steps **and the
+  WeDo program** in the right-pane blocks pane. Plain Scratch questions never
+  trigger a fetch.
 - **New chat** (top-right) starts a fresh conversation. **Chats** (top bar) opens
   the history drawer — every conversation is saved locally and can be reopened
   or deleted there.
@@ -260,7 +271,7 @@ scratchblocks-prompts/
 start.bat / start.sh       launchers
 img/                       screenshots + logo_en / logo_bg (loading splash) for the README
 scratch_helper.db          local SQLite chat history (created on first run)
-preferences.json           child's language/age/name/gender (created when you save prefs)
+preferences.json           child's language/age/name/gender + buildHelp toggle (created when you save prefs)
 ```
 
 The server exposes a small JSON API: `/api/chat` (streaming tutor answer),
@@ -294,6 +305,17 @@ The server exposes a small JSON API: `/api/chat` (streaming tutor answer),
   Content-Security-Policy (`script-src 'self'`, no `eval`; `frame-ancestors
   'none'`), and caps request bodies. The Docker image runs as a non-root user.
   None of this changes the data posture below — it just reduces blast radius.
+- **Build help is opt-in and hard-allowlisted.** The optional approved-source
+  gather for official-build questions is a parent toggle (off by default), only
+  ever runs after the topic classifier labels the message a build question for
+  an allowed kit (plain Scratch questions never trigger it), fetches snippets
+  from approved domains only (`SCRATCH_BUILD_SOURCES`), is best-effort (fails
+  open — no fetch can stall an answer), and never sends the child's profile or
+  history. The tutor's answer then opens with the 🔎 "web research" note
+  (injected by the server while its sources really were fetched, in the
+  child's language), followed by the tutor's own honest statement of what the
+  sources covered — the claim is always truthful, and the model is told never
+  to invent assembly steps it has no source for. See "Privacy & data".
 
 ## Troubleshooting
 
@@ -321,10 +343,40 @@ The server exposes a small JSON API: `/api/chat` (streaming tutor answer),
 **This app does not train any model and does not retain your data on any
 server.** There is no backend service run by the author — the Node process runs
 on *your* machine, and the only network egress is to the Ollama backend *you*
-configured. Chat history and preferences stay in `scratch_helper.db` /
-`preferences.json` next to the server, never sent anywhere. Remove them anytime
+configured — plus, **only if you turn on Build help** (a parent toggle in
+Preferences, off by default), a small best-effort fetch for official-build
+questions, described below. Chat history and preferences stay in
+`scratch_helper.db` / `preferences.json` next to the server, never sent
+anywhere. Remove them anytime
 (`rm -f preferences.json scratch_helper.db scratch_helper.db-*`), or delete
 individual chats from the drawer.
+
+**Build help (optional, parent toggle, default OFF).** When a child asks for a
+specific build (e.g. "build a samurai robot with WeDo 2.0") and the toggle is
+on, the server gathers a few **short snippets from an approved-domain
+allowlist only** (`education.lego.com`, `scratch.mit.edu`; configurable with
+`SCRATCH_BUILD_SOURCES`) and injects them as extra context for the tutor.
+Two gathering paths, both snippet-only with a ~6 KB cap and a 7 s timeout —
+the first is tried and, if unavailable, the other follows:
+
+- **With an `OLLAMA_API_KEY`** (direct cloud, or added to `.env`):
+  `POST https://ollama.com/api/web_search` (Ollama's web search API) — results
+  are filtered to the allowlist before anything is used (requires a free
+  Ollama account/key even with the local desktop app). If the search API is
+  unavailable (invalid/dummy key, outage, no allowlisted results), it falls
+  back to the fixed page below.
+- **Fallback / no key:** one fixed allowlisted page (the Scratch Wiki's
+  WeDo 2.0 extension page — server-rendered, so a raw fetch gets real text;
+  the LEGO Education site is a JS-only SPA for raw GETs) is fetched directly.
+
+Results are cached in memory for ~30 minutes; nothing from the gather is
+written to disk. **Nothing personal rides this path**: the search query is
+built only from the child's build-topic message text (build names, kit type) —
+never the child's name, age, gender, or chat history. If the fetch fails or is
+slow, the tutor simply answers from its own knowledge, as it does with the
+toggle off. Off-topic questions can never trigger it: the gathering only ever
+runs after the topic classifier labels the latest message as a build question
+about one of the allowed kits.
 
 **Prefer a local model — especially for a child.** With a purely local model,
 nothing leaves your machine: no question, no answer, no history. That is the
@@ -356,8 +408,20 @@ This is a **personal, open-source project** released under the **MIT License**
 (see [LICENSE](LICENSE), © 2026 d-ang356). The software is provided **"as is"**,
 without warranty of any kind, express or implied.
 
+**Trademarks & non-affiliation.** This project is an independent, unofficial
+educational tool. It is **not affiliated with, sponsored by, or endorsed by**
+the Scratch Foundation or the LEGO Group. **Scratch** is a project of the
+Scratch Foundation and is available for free at <https://scratch.mit.edu>.
+**LEGO® is a trademark of the LEGO Group, which does not sponsor, authorize,
+or endorse this project** (the wording recommended by the LEGO Group's
+"Fair Play" guidelines). No Scratch or LEGO logos are used by this app, and
+nothing here is an official LEGO or Scratch product.
+
 If you clone, fork, or deploy this project, **you are responsible for your own
-Ollama setup and for what data you send where.** The author does not run a
+Ollama setup and for what data you send where** — including the optional, **off
+by default** Build-help fetch described under "Privacy & data" (you choose
+whether children can trigger approved-source web fetches, and which domains are
+allowlisted). The author does not run a
 hosted instance and does not see, store, or process any data from your copy.
 By configuring a backend (the local Ollama app, the Ollama Cloud API, or any
 other endpoint) and sharing the app with a child, **you become the deployer**,
