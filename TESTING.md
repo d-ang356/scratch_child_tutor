@@ -32,7 +32,7 @@ There are **two groups of tests**, selected by a tag in the test title:
 | Tag | What it does | Needs a real Ollama key? | When it runs in CI |
 |-----|--------------|--------------------------|--------------------|
 | `@mock` | Intercepts the browser's `POST /api/chat` with `page.route(...)` and fulfills it with a canned SSE response. The request **never reaches the server**, so the server-side topic classifier and the upstream Ollama call do **not** run. Deterministic, free, fast. | No (a dummy key is fine) | On every PR and push to `main` |
-| `@real` | Does **not** intercept. The full server → Ollama path runs (classifier + tutor stream). Used for the safety gate: a Scratch question gets an answer + blocks; an off-topic question gets neither. | Yes (`OLLAMA_API_KEY`) | Only when the `OLLAMA_API_KEY` repo secret is set |
+| `@real` | Does **not** intercept. The full server → Ollama path runs (classifier + tutor stream, plus the optional build-help gather when the parent toggle is on). Used for the safety gate (a Scratch question gets an answer + blocks; an off-topic question gets neither) and as a **stall-guard** for the build-help pipeline (`real/buildHelpReal.spec.js`: with `buildHelp` on, an official-build question still completes — the gather is fail-open, so the model choice / search outcome cannot break it). | Yes (`OLLAMA_API_KEY`) | Only when the `OLLAMA_API_KEY` repo secret is set |
 
 > **Why `@mock` is deterministic.** `page.route('**/api/chat', route => route.fulfill(...))`
 > fulfills the request at the **browser boundary**. The fetch never hits the
@@ -288,9 +288,31 @@ no `if` and always runs. (The secret itself is passed to the real job's
 > `gpt-oss:120b`. The mock job reads `SCRATCH_MODEL` too (default `glm-5.2`),
 > but it doesn't matter there — `/api/chat` is intercepted.
 
-> The `@real` suite currently has one test — the safety-gate check in
-> `tests/real/safety.spec.js` (an off-topic question gets the canned refusal and
-> no blocks). It only runs when `OLLAMA_API_KEY` is set, so the real job is
+> The `@real` suite has three tests:
+> 1. the safety-gate check in `tests/real/safety.spec.js` (an off-topic question
+>    gets the canned refusal and no blocks);
+> 2. the build-help pipeline tests in `tests/real/buildHelpReal.spec.js`
+>    (two tests). Test 1 — written flow: with `buildHelp: true` an
+>    official-build question (EN phrasing) completes end-to-end. The network
+>    is the synchronization: Playwright API monitoring awaits the /api/chat
+>    response, then gates on the client-driven persistence POST of the
+>    assistant message (fired at finalize) and asserts the full content from
+>    that body (research-note marker, scratchblocks fence, blocks) BEFORE the
+>    rendered UI — note opening the answer, a right-pane tab with real
+>    scratchblocks SVGs, composer re-enabled + the child-addressing rule
+>    (spoken to by name, never "the child"). Test 2 — toggle-off transition:
+>    unchecking the checkbox in the modal, a new chat started via one of the
+>    pre-set example chips answers WITHOUT any research note (gathering and
+>    wording fully out of the pipeline). No sleeps or fixed waits anywhere —
+>    every step auto-awaits a real state or network event.
+>
+> The build-help smoke is deliberately **model-agnostic**: whether the
+> classifier says BUILD (gather fires — server-side, best-effort), SCRATCH
+> (no gather), or returns nothing usable (fail-open), the assertions hold, so
+> it passes on any CI model (`gpt-oss:20b`, `gpt-oss:120b`, `glm-5.2`) — its
+> job is to prove the extra gather can never stall or break an answer, not to
+> judge model answers. It adds up to ~2 min worst-case to the real job.
+> The `@real` group only runs when `OLLAMA_API_KEY` is set, so the real job is
 > "skipped" (via the `check-secret` gate) on repos with no key.
 
 ### What each job produces
@@ -1085,8 +1107,10 @@ tests/
     emptyAnswers.spec.js        @mock empty/no-blocks finalize paths (no content -> noAnswer2; reasoning-only -> noAnswer; prose-no-fence -> no tab)
     persistence.spec.js         @mock mocked answer persists across reload; drawer -> open by title -> rebuilt from DB
     languageChange.spec.js      @mock language switching via prefs modal (EN "Chats" -> BG "Чатове" -> reload persists -> EN); deletes preferences.json in beforeEach
+    buildSearch.spec.js         @mock buildHelp toggle round-trip (default OFF) + Thinking-indicator wording during the search phase: with buildHelp on, the server's {delta:{search:true}} marker frame (mocked) switches the indicator to t("statusThinkingSearch") ("…doing online search…") while nothing is rendered and the button is in Stop state; Stop aborts cleanly and the toggle is restored
   real/
     safety.spec.js              @real safety-gate test (off-topic -> refusal; gated on key)
+    buildHelpReal.spec.js       @real x2: (1) buildHelp on -> API-monitored /api/chat 200 + assistant persistence POST body (note marker, fence, blocks, child addressed by name) asserted before the UI -> note + block tab; (2) checkbox removed -> new chat via example chip answers WITHOUT the note (gated on key)
 Dockerfile                      app image (zero-dep, node:22-slim, non-root USER node, /data volume owned by node)
 .dockerignore                   keeps the app image small (excludes root *.md explicitly, not **/*.md)
 docker-compose.yml              app + Playwright containers (shared DB volume; `expose`, no host port)

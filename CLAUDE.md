@@ -133,7 +133,12 @@ OLLAMA_BASE=https://ollama.com OLLAMA_API_KEY=<key> SCRATCH_MODEL=glm-5.2 node -
      message**, not the conversation history. This is safe only because the gate is
      lenient (`UNSURE → SCRATCH`, and it fails OPEN on error/timeout) **and** the
      tutor prompt is the independent second layer. Do not "fix" this by re-sending
-     the whole history — it adds a large cloud round-trip on every turn.
+     the whole history — it adds a large cloud round-trip on every turn. Also do
+     NOT lower the classifier's `max_tokens` (2048): verified live against
+     reasoning `:cloud` models (glm-5.2/5.3-flash), which emit ~200-250
+     reasoning tokens BEFORE the one-word verdict — small budgets truncate
+     mid-reasoning (`finish_reason: length`, empty content) and the gate then
+     silently fails open on EVERY message.
    - Tutor prompt (`# Scope and safety`) refuses anything that slips through.
    Be very cautious about weakening either layer — children and parents use this app.
 5. **Blocks only from official Scratch 3.0 + extensions.** Allowed extensions:
@@ -143,6 +148,61 @@ OLLAMA_BASE=https://ollama.com OLLAMA_API_KEY=<key> SCRATCH_MODEL=glm-5.2 node -
    `(distance:: wedo)`. Booleans put `::` *inside* `<>`: `<tilted [any v]?:: wedo>`.
 6. **Client-driven persistence.** The browser saves user/assistant messages to SQLite
    after the stream completes; history is sent back as context on the next turn.
+6b. **Build help (approved-source gather) — parent opt-in, OFF by default.**
+   The classifier (`CLASSIFIER_PROMPT`) has a third verdict `BUILD` for
+   official/fan build questions about the allowed kits. When it fires AND
+   `preferences.json` has `buildHelp: true` (a checkbox `#pBuildHelp` in the
+   prefs modal, field `buildHelp` in `sanitizePrefs`), `fetchBuildContext`
+   (server.js) gathers snippet-level context and injects it as a SECOND system
+   message into the tutor call. Hard rules — do not weaken:
+   - **Hard domain allowlist** (`education.lego.com`, `scratch.mit.edu`,
+     `scratch-wiki.info`; `SCRATCH_BUILD_SOURCES` env override). Path A (key
+     set): POST `https://ollama.com/api/web_search` (fixed cloud endpoint, docs
+     shape `{query, max_results}` → `{results:[{title,url,content}]}`), results
+     filtered to the allowlist. Path B (no key): one fixed allowlisted page —
+     the Scratch Wiki WeDo 2.0 extension page (`en.scratch-wiki.info`, chosen
+     because it is server-rendered; education.lego.com is a JS-only SPA for
+     raw GETs). No URL from chat text or a model is ever fetched.
+   - **Fail-open, always**: 10 s timeout, snippet-only (`~6 KB` cap, max 3
+     snippets), nothing cached to disk (in-memory `buildCache`, 30 min TTL,
+     max 20 entries, successes only) — on any failure the tutor answers from
+     its own knowledge. The gather runs inside the client's existing
+     "Thinking…" window; no new spinner.
+   - Nothing personal rides the search path: the query is built only from the
+     child's build-topic message text (never name/age/gender/history), with the
+     kit name appended when none is present (e.g. a kitless "build a samurai
+     robot" query gets ` WeDo 2.0`). When context is successfully gathered,
+     the SERVER INJECTS the research note itself (`RESEARCH_NOTE`): a first
+     SSE `content` frame ("🔎 I did a quick web check of the official LEGO
+     Education and Scratch sources..." in the child's language via
+     `detectLang`) written in `streamAnswer` BEFORE piping the model stream —
+     deterministic across models (glm/gpt-oss differ in engagement, some
+     refuse physical builds outright), and never a false claim (the note is
+     only written when the fetch succeeded). The injected build-context
+     header then requires an HONEST coverage statement right after the note
+     ("sources don't have this exact build...") and forbids naming a source
+     for content not taken from it.
+     This is the app's second egress category — keep README "Privacy & data" +
+     "Disclaimer" and the prefs `prefsParentNote`/`prefsBuildHelpHint` strings
+     consistent when touching it.
+   - **Search phase framing**: for a buildHelp-gathered answer the SSE opens
+     BEFORE the gather with a marker frame `{delta:{search:true}}`
+     (`startSearchPhase`, server.js), switching the client's Thinking
+     indicator to `statusThinkingSearch` ("Thinking and doing online search…"
+     / BG "Мисля и правя онлайн справка…"); when the gather yields nothing the
+     server sends `{delta:{search:false}}` so the label cannot linger. The
+     research-note content frame is then withheld until the model's FIRST
+     content delta (`streamWithNotePrefix`) — the whole gather + reasoning
+     window shows as Thinking, with no response visible before. The
+     Thinking indicator is rebuilt ONLY when the phase label changes or the
+     element is missing (updateLive guard uses `data-search`) — never per
+     delta: per-delta innerHTML rebuilds restart the CSS animation and make
+     the dots flicker.
+   - @mock tests can't execute this server-side path (they intercept
+     `/api/chat` at the browser boundary, so the server never runs) — the
+     toggle round-trip + UX paths are pinned by `buildSearch.spec.js`, the
+     full pipeline by `real/buildHelpReal.spec.js` (gated on a key) plus a
+     live manual check.
 7. **Right pane tabs.** Each assistant answer that contains a fenced `scratchblocks`
    block becomes a tab; multiple `---` scripts within one answer stack inside that tab.
    A hover “↖” icon jumps to the matching instruction message in the chat. With many
@@ -192,6 +252,8 @@ tests/
   specs/emptyAnswers.spec.js    @mock empty/no-blocks finalize paths: no content -> noAnswer2; reasoning-only -> noAnswer; prose-no-fence -> no tab + blocksEmpty
   specs/persistence.spec.js     @mock mocked answer persists across reload; reload -> drawer -> open by title -> assistant msg + tab rebuilt from DB
   specs/languageChange.spec.js  @mock language switching via prefs modal (EN "Chats" -> BG "Чатове" -> reload persists -> back to EN); deletes preferences.json in beforeEach for a deterministic EN start
+  specs/buildSearch.spec.js     @mock buildHelp toggle round-trip (default OFF) + official-build question answers/tabs identically with toggle on/off (UI contract; server gather can't run under browser-boundary mocking)
+  real/buildHelpReal.spec.js    @real x2 (gated on key; API-monitored — asserts the assistant persistence POST body before the UI): (1) buildHelp on -> note + fenced program + rendered SVGs + child addressed by name; (2) checkbox removed -> new chat via example chip answers WITHOUT the note
   real/safety.spec.js           @real safety-gate test (off-topic -> refusal; gated on key)
 Dockerfile                      app image (zero-dep, node:22-slim, non-root USER node, /data volume owned by node)
 docker-compose.yml              scratch-app + official Playwright container (shared DB + preferences volume; `expose`, no host port)
@@ -374,6 +436,12 @@ scripts/lint.js                 zero-dep lint (`node --check` syntax pass + warn
 - Match existing code: plain ES modules in browser, CommonJS in Node, minimal comments,
   clear variable names, no TypeScript, no frameworks.
 - Keep the UI child-friendly: short labels, warm tone, large tap targets.
+- **Write Bulgarian in standard literary form ( книжовен български език).** All BG
+  user-facing strings (STRINGS, example chips, server-injected notes/refusals),
+  test names and translations must use correct, literary Bulgarian — no
+  colloquialisms, dialectisms, or wrong collocations (e.g. "построим" a robot,
+  not "сградим"; "Когато", not "Кога" for "when"). This applies to my own
+  chat replies in Bulgarian too, not only to the code.
 - Any change touching the safety model must be adversarially tested with off-topic
   prompts in both English and Bulgarian.
 

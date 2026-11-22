@@ -60,7 +60,7 @@ test('initial screen, Ollama connected, suggestion chip starts a chat @mock', as
 
   // 1. Initial screen: welcome card + predefined suggestion chips.
   await chat.expectWelcomeVisible();
-  await expect(chat.exampleItems()).toHaveCount(3);
+  await expect(chat.exampleItems()).toHaveCount(4);
   const items = await chat.exampleItems().all();
   for (const item of items ) {
     await expect(item).toBeEnabled();

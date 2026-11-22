@@ -13,6 +13,7 @@
 //                          is pre-checked, so the field is always set)
 //   #pAge / #pName         age + name inputs
 //   #pAgeErr               inline age validation error
+//   #pBuildHelp            build-help parent-toggle checkbox (default unchecked)
 //   #prefsForm button.primary  the Save button (submits the form)
 
 const { expect } = require('@playwright/test');
@@ -51,6 +52,11 @@ class PreferencesModalPage extends BasePage {
     await this.nameInput.fill(name);
   }
 
+  async setBuildHelp(on) {
+    if (on) await this.buildHelpInput.check();
+    else await this.buildHelpInput.uncheck();
+  }
+
   // Save and wait for the modal to close.
   async save() {
     await this.saveBtn.click();
@@ -66,6 +72,17 @@ class PreferencesModalPage extends BasePage {
     const body = await res.json();
     return body && body.prefs ? body.prefs.gender : null;
   }
+
+  // Read the persisted build-help toggle straight from the server (like
+  // persistedGender) — true only when the saved prefs say buildHelp === true.
+  async persistedBuildHelp() {
+    const res = await this.page.request.get('/api/preferences');
+    expect(res.ok()).toBeTruthy();
+    const body = await res.json();
+    return !!(body && body.prefs && body.prefs.buildHelp);
+  }
+
+  get buildHelpInput() { return this.loc('#pBuildHelp'); }
 
   async cancel() {
     await this.cancelBtn.click();

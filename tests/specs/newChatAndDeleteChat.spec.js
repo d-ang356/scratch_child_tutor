@@ -30,7 +30,7 @@ test('user can start a new chat @mock', async ({ page }) => {
   await prefs.ensureDismissed();
   // Verify Chat elements on opening the tutor even with existing chats.
   await chat.expectWelcomeVisible();
-  await expect(chat.exampleItems()).toHaveCount(3);
+  await expect(chat.exampleItems()).toHaveCount(4);
   await expect(blocks.blocksEmpty).toBeVisible();
   // Open the chat history and verify there are existing chats (seeded by
   // globalSetup). Wait for the seeded row to actually render before clicking.
@@ -47,7 +47,7 @@ test('user can start a new chat @mock', async ({ page }) => {
   await chat.newChatBtn.click();
   // Verify Chat elements on new chat start.
   await chat.expectWelcomeVisible();
-  await expect(chat.exampleItems()).toHaveCount(3);
+  await expect(chat.exampleItems()).toHaveCount(4);
   await expect(chat.input).toHaveValue("");
   await expect(blocks.blocksEmpty).toBeVisible();
 
